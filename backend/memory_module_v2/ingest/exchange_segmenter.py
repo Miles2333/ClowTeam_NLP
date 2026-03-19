@@ -23,8 +23,12 @@ def _is_substantive_assistant(content: str, *, min_chars: int = 80) -> bool:
     return len(stripped) >= min_chars
 
 
-def _render_verbatim(messages: list[NormalizedMessage]) -> tuple[str, str]:
-    """Render messages into verbatim_text (full) and verbatim_snippet (concise)."""
+def _render_verbatim(
+    messages: list[NormalizedMessage],
+    *,
+    min_assistant_chars_for_snippet: int,
+) -> tuple[str, str]:
+    """Render messages into verbatim_text (full) and verbatim_snippet (substantive-only)."""
     text_parts: list[str] = []
     snippet_parts: list[str] = []
 
@@ -34,10 +38,13 @@ def _render_verbatim(messages: list[NormalizedMessage]) -> tuple[str, str]:
         text_parts.append(f"[{prefix}] {content}")
 
         if msg.role == "user":
-            snippet_parts.append(f"USER: {content[:500]}")
-        elif msg.role == "assistant" and _is_substantive_assistant(content, min_chars=20):
+            snippet_parts.append(f"USER: {content}")
+        elif msg.role == "assistant" and _is_substantive_assistant(
+            content,
+            min_chars=min_assistant_chars_for_snippet,
+        ):
             cleaned = clean_text(content)
-            snippet_parts.append(f"ASSISTANT: {cleaned[:500]}")
+            snippet_parts.append(f"ASSISTANT: {cleaned}")
 
     verbatim_text = "\n\n".join(text_parts)
     verbatim_snippet = "\n\n".join(snippet_parts)
@@ -89,12 +96,12 @@ def segment_exchanges(
                 chunk_end = min(chunk_start + max_ply_len - 1, ply_end)
                 _add_exchange(
                     exchanges, session_id, chunk_start, chunk_end,
-                    msg_by_idx, min_exchange_chars, substantive,
+                    msg_by_idx, min_exchange_chars, substantive, min_assistant_chars,
                 )
         else:
             _add_exchange(
                 exchanges, session_id, ply_start, ply_end,
-                msg_by_idx, min_exchange_chars, substantive,
+                msg_by_idx, min_exchange_chars, substantive, min_assistant_chars,
             )
 
     return exchanges
@@ -108,12 +115,16 @@ def _add_exchange(
     msg_by_idx: dict[int, NormalizedMessage],
     min_exchange_chars: int,
     has_substantive: bool,
+    min_assistant_chars: int,
 ) -> None:
     msgs = [msg_by_idx[i] for i in range(ply_start, ply_end + 1) if i in msg_by_idx]
     if not msgs:
         return
 
-    verbatim_text, verbatim_snippet = _render_verbatim(msgs)
+    verbatim_text, verbatim_snippet = _render_verbatim(
+        msgs,
+        min_assistant_chars_for_snippet=min_assistant_chars,
+    )
     total_chars = sum(len(m.content or "") for m in msgs)
 
     if total_chars < min_exchange_chars:

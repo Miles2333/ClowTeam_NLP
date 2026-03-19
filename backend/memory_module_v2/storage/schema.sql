@@ -6,6 +6,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE SCHEMA IF NOT EXISTS memory_v2;
 
 -- 1) memory_exchanges: evidence layer + keyword corpus
+DROP TABLE IF EXISTS memory_v2.memory_exchanges;
 CREATE TABLE IF NOT EXISTS memory_v2.memory_exchanges (
   exchange_id      text PRIMARY KEY,
 
@@ -34,6 +35,7 @@ CREATE INDEX IF NOT EXISTS ix_memory_exchanges_created_at
 
 -- 2) memory_objects: index layer + dense retrieval
 -- Replace vector(1024) with your embedding dimension if different
+DROP TABLE IF EXISTS memory_v2.memory_objects;
 CREATE TABLE IF NOT EXISTS memory_v2.memory_objects (
   object_id        text PRIMARY KEY,
   exchange_id      text NOT NULL REFERENCES memory_v2.memory_exchanges(exchange_id) ON DELETE CASCADE,

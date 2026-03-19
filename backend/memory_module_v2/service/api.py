@@ -17,8 +17,9 @@ from ..domain.models import (
     MemorySearchResponse,
 )
 from ..distill.distiller import distill_exchange
-from ..ingest.exchange_segmenter import segment_exchanges
-from ..ingest.session_reader import load_session_raw, normalize_messages, read_session
+from ..ingest.exchange_segmenter import _is_substantive_assistant, segment_exchanges
+from ..ingest.text_cleaner import clean_text
+from ..ingest.session_reader import load_session_raw, read_session
 from ..retrieval.service import retrieval_search
 from ..storage.repos import ExchangesRepo, ObjectsRepo
 from .config import get_memory_v2_config
@@ -111,6 +112,7 @@ def get_exchange(
     ply_end: int,
 ) -> ExchangeEvidence:
     """Evidence drilldown: fetch verbatim messages for an exchange."""
+    config = get_memory_v2_config()
     data = load_session_raw(session_id)
     if data is None:
         return ExchangeEvidence(
@@ -137,8 +139,15 @@ def get_exchange(
 
         role = msg.get("role", "").upper()
         content = msg.get("content", "")
-        if content:
-            snippet_parts.append(f"{role}: {content[:500]}")
+        if not content:
+            continue
+        if role == "USER":
+            snippet_parts.append(f"{role}: {content}")
+        elif role == "ASSISTANT" and _is_substantive_assistant(
+            content,
+            min_chars=config.min_assistant_chars,
+        ):
+            snippet_parts.append(f"{role}: {clean_text(content)}")
 
     return ExchangeEvidence(
         session_id=session_id,
