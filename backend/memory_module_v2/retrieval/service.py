@@ -62,12 +62,23 @@ def retrieval_search(
             for c in keyword_candidates[:top_k]
         ]
     else:
-        fused = rrf_fusion(
-            dense_candidates,
-            keyword_candidates,
-            k=config.rrf_k,
-            top_k=top_k,
-        )
+        fusion_method = (getattr(config, "fusion_method", "weighted_sum") or "weighted_sum").lower()
+        if fusion_method == "weighted_sum":
+            fused = weighted_sum_fusion(
+                dense_candidates,
+                keyword_candidates,
+                dense_weight=getattr(config, "dense_weight", 0.3),
+                keyword_weight=getattr(config, "keyword_weight", 0.7),
+                top_k=top_k,
+            )
+        else:
+            # Default fallback: original RRF fusion
+            fused = rrf_fusion(
+                dense_candidates,
+                keyword_candidates,
+                k=getattr(config, "rrf_k", 60),
+                top_k=top_k,
+            )
 
     if filters and filters.min_fused_score:
         fused = [f for f in fused if f.get("fused_score", 0) >= filters.min_fused_score]
@@ -132,6 +143,7 @@ def retrieval_search(
 
     debug_info = None
     if debug:
+        fusion_method = (getattr(config, "fusion_method", "weighted_sum") or "weighted_sum").lower()
         debug_info = MemorySearchDebug(
             dense_candidates=[
                 {"object_id": c.get("object_id"), "exchange_id": c["exchange_id"], "score": c.get("dense_score", 0)}
@@ -141,7 +153,11 @@ def retrieval_search(
                 {"exchange_id": c["exchange_id"], "score": c.get("keyword_score", 0)}
                 for c in keyword_candidates[:20]
             ],
-            fusion={"method": "rrf" if mode == SearchMode.HYBRID_CROSS else mode.value, "rrf_k": config.rrf_k},
+            fusion=(
+                {"method": fusion_method, "dense_weight": getattr(config, "dense_weight", None), "keyword_weight": getattr(config, "keyword_weight", None)}
+                if mode == SearchMode.HYBRID_CROSS
+                else {"method": mode.value}
+            ),
         )
 
     return MemorySearchResponse(

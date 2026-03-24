@@ -12,8 +12,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 backend/config/.env
+backend/knowledge/*
 backend/memory_module_v1/sessions/*.json
 backend/memory_module_v1/sessions/archive/*.json
+backend/memory_module_v2/eval/*.jsonl
+backend/memory_module_v2/eval/*.json
 backend/storage/memory_index/*
 !backend/storage/memory_index/.gitkeep
 backend/storage/knowledge/*

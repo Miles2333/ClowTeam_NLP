@@ -42,6 +42,16 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return default
 
 
+def _env_float(key: str, default: float) -> float:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 MemoryBackend = Literal["off", "v1", "v2"]
 MemoryV2Inject = Literal["tool", "always", "off"]
 
@@ -89,6 +99,13 @@ class MemoryV2Config:
     keyword_top_k: int = 200
     final_top_k: int = 10
     rrf_k: int = 60
+
+    # hybrid fusion
+    # - "rrf" keeps the original behavior (RRF(k=config.rrf_k))
+    # - "weighted_sum" uses score normalization + user-defined weights
+    fusion_method: str = field(default_factory=lambda: _env("MEMORY_V2_FUSION_METHOD", "weighted_sum").lower())
+    dense_weight: float = field(default_factory=lambda: _env_float("MEMORY_V2_DENSE_WEIGHT", 0.3))
+    keyword_weight: float = field(default_factory=lambda: _env_float("MEMORY_V2_KEYWORD_WEIGHT", 0.7))
 
     # injection
     inject_top_k: int = field(default_factory=lambda: _env_int("MEMORY_V2_INJECT_TOP_K", 3))

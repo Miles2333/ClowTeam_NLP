@@ -39,8 +39,13 @@ def _is_noise_token(t: str) -> bool:
         return True
     if all(c in _CJK_PUNCTUATION for c in t):
         return True
-    if len(t) == 1 and not t.isalnum():
-        return True
+    if len(t) == 1:
+        # Keep single CJK ideographs; jieba often returns single characters for short queries.
+        # Otherwise BM25 query tokens could become empty, breaking keyword retrieval.
+        if re.match(r"^[\u3400-\u4DBF\u4E00-\u9FFF]$", t):
+            return False
+        if not t.isalnum():
+            return True
     return False
 
 

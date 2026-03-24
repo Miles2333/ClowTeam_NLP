@@ -1,72 +1,45 @@
-一个本地运行、文件优先、可审计的 AI Agent 工作台。
+# Mini-OpenClaw
 
-- 对话会落盘到本地 `JSON`
-- 长期记忆由 `memory_module_v2` 管理，采用结构化蒸馏 + 混合检索
-- skill不是黑盒函数，而是可读可改的 `SKILL.md`
-- Prompt、工具调用、记忆注入、检索过程都能被看到
+**本地运行、文件优先、可审计** 的 AI Agent 工作台，一定程度上解决Openclaw的长期记忆及安全问题：
+对话与证据落盘为本地 JSON；
+长期记忆由 `memory_module_v2` 做结构化蒸馏与混合检索实现11倍tokens压缩；
+接入自己微调的Qwen3.5 4b模型配合Langchain的before_agent middleware用于合规内容检测；
+基于 SKILL构建能力编排层，按需调度多个Tools；
+接入Langfuse，Prompt、工具轨迹、记忆检索与注入过程都排查；
 
-如果你想做一个“能解释自己为什么这样做”的 Agent，这个项目就是为这个方向准备的。
 
 ## 效果展示
+
 页面：
+
 ![](./page_show1.png)
 ![](./Snipaste_2026-03-18_21-42-43.png)
 
 蒸馏后的部分记忆片段：
-![](./database_schema.png)
 
+![](./database_schema.png)
 
 ## 为什么是它
 
-
+- **可审计**：会话在 `sessions/*.json`，记忆对象与证据可追溯到具体轮次；索引（向量 / BM25）可丢弃重建。
+- **分层记忆**：v2 将「结构化检索对象」与「原始 verbatim 证据」分开，命中后可回跳，而不是只剩一段模型摘要。
+- **工程化 Agent 栈**：基于 **LangChain 1.x `create_agent`**，可选 **Guardian 前置审查**、**对话摘要中间件**、**Postgres Checkpointer**；与 **Langfuse** 等追踪可选对接。
+- **技能即文档**：技能目录 + `SKILL.md`，配合快照按需加载，扩展和 Code Review 都轻量。
 
 ## 它现在能做什么
 
-当前仓库已经具备一套完整的本地 Agent 基础能力：
-
-- 流式聊天：基于 FastAPI SSE 返回 token、工具调用、分段回复
-- 会话持久化：每轮对话保存到 `backend/sessions/*.json`
-- 长期记忆：`backend/memory_module_v2/`，支持结构化蒸馏、证据回跳和混合检索
-- 本地知识库检索：`backend/knowledge/` + LlamaIndex
-- 技能系统：Agent 先看技能快照，再按需读取 `SKILL.md`
-- 三栏工作台 UI：会话列表、聊天区、文件检查器
-- 文件在线编辑：可直接编辑 Memory / Skills / Workspace 文件
-- 记忆注入模式切换：可选择工具调用、每轮自动注入或关闭
-- 记忆检索：`memory_module_v2` 提供 `dense + BM25 + RRF` 的混合检索
-
-当前内置的技能包括：
-
-- `天气查询`
-- `联网搜索`（Tavily）
-- `本地知识库检索`
-- `失败恢复经验沉淀`
-
-## 界面结构
-
-前端是一个面向 Agent 调试的三栏工作台：
-
-- 左栏：会话列表、历史消息、Raw Messages
-- 中栏：聊天面板、工具调用链、检索卡片、流式输出
-- 弹出框：Memory / Skills / Workspace 文件编辑器（Monaco）
-
-这不是一个只给终端用的 Agent，而是一个“能看见自己内部状态”的 Agent IDE。
-
-## 一次请求发生了什么
-
-```mermaid
-flowchart LR
-    U["用户发送消息"] --> F["POST /api/chat"]
-    F --> S["加载会话历史 sessions/*.json"]
-    S --> R{"MEMORY_BACKEND=v2?"}
-    R -- 是 --> M["memory_module_v2 生成检索上下文"]
-    R -- 否 --> P["直接拼接系统提示词"]
-    M --> P
-    P --> A["LangChain create_agent"]
-    A --> T["调用工具 / 读取技能 / 生成回复"]
-    T --> E["SSE 推送 token / tool_start / tool_end / done"]
-    E --> UI["前端实时更新界面"]
-    UI --> SAVE["保存用户消息、助手消息、工具记录"]
-```
+- **流式对话**：FastAPI + SSE，推送 token、工具调用与分段回复。
+- **会话持久化**：每轮写入 `backend/sessions/*.json`。
+- **长期记忆**：`backend/memory_module_v2/` — 结构化蒸馏、证据回跳、`dense + BM25 + RRF` 混合检索；可选 **独立蒸馏模型**（`DISTILL_*`）以节省主模型 token。
+- **本地知识库**：`backend/knowledge/` + LlamaIndex。
+- **技能系统**：先读技能快照，再按需拉取 `SKILL.md`。
+- **三栏工作台**：会话列表、聊天区、右侧文件检查器；可在线编辑 Memory / Skills / Workspace。
+- **记忆注入策略**：`tool`（Agent 自主 `search_memory`）/ `always` / `off`（见下文环境变量）。
+- **安全与运维**
+  - **Guardian**：在 Agent 执行前用轻量模型判定用户消息是否疑似提示词注入 / 越权；可单独配置 `GUARDIAN_PROVIDER`、超时与 **fail-open / fail-closed**（`GUARDIAN_FAIL_MODE`）。
+  - **短期对话压缩**：可选 `SummarizationMiddleware`，按消息条数触发摘要、保留最近若干条（`SUMMARIZATION_*`）。
+  - **状态持久化**：可选 Postgres LangGraph **checkpointer**，便于多轮会话状态恢复（`CHECKPOINTER` / `POSTGRES_*`）。
+  - **可观测性**：可选 **Langfuse** 密钥与地址，接入追踪。
 
 ## 技术栈
 
@@ -74,57 +47,47 @@ flowchart LR
 
 - Python 3.10+
 - FastAPI
-- LangChain 1.x `create_agent`
-- OpenAI-compatible model API
+- LangChain 1.x（`create_agent` + 可选中间件）
+- OpenAI 兼容的多厂商 Chat / Embedding API
 
 ### 前端
 
 - Next.js 14 App Router
-- React 18
-- TypeScript
-- Tailwind CSS
-- Monaco Editor
+- React 18、TypeScript
+- Tailwind CSS、Monaco Editor
 
-### 默认模型配置
+### 默认模型配置（可在 `backend/config/.env` 覆盖）
 
-- LLM Provider: `zhipu`
-- LLM Model: `glm-5`
-- Embedding Provider: `bailian`
-- Embedding Model: `text-embedding-v4`
+- LLM：`zhipu` / `glm-5`
+- Embedding：`bailian` / `text-embedding-v4`
 
-目前已支持的模型厂商：
-
-- 智谱 `zhipu`
-- 百炼 `bailian`
-- DeepSeek `deepseek`
-- OpenAI 兼容接口 `openai`
+已支持的对话模型接入方式：**智谱 `zhipu`、百炼 `bailian`、DeepSeek `deepseek`、OpenAI 兼容 `openai`**（ embedding 侧常见为 **百炼 / OpenAI 兼容**）。
 
 ## 快速开始
 
-### 1. 环境要求
+### 环境要求
 
 - Python 3.10+
-- Node.js 18+
-- npm
+- Node.js 18+、npm
 
-### 2. 启动后端
+### 启动后端
 
 ```bash
 cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env
-然后补齐环境变量
 ```
 
-然后启动：
+配置环境变量：**复制 `backend/config/.env.example` 为 `backend/config/.env`**，按文件内注释补齐密钥与模型；详见下文「记忆开关」与 Guardian 相关变量。
+
+启动 API（在 `backend` 目录下，与 `app.py` 同级）：
 
 ```bash
 uvicorn app:app --host 0.0.0.0 --port 8002 --reload
 ```
 
-### 3. 启动前端
+### 启动前端
 
 ```bash
 cd frontend
@@ -132,134 +95,128 @@ npm install
 npm run dev
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)。
+浏览器打开 [http://localhost:3000](http://localhost:3000)。
 
 ## 5 分钟体验路线
 
-如果你第一次打开项目，建议按这个顺序体验：
-
-1. 发一条普通聊天消息，感受流式输出。
-2. 打开右侧 Inspector，查看当前会话和文件状态。
-3. 新建或编辑一个 skill，观察系统如何即时生效。
-4. 启用 `MEMORY_BACKEND=v2`，再问一个和长期记忆相关的问题。
-5. 查看 `backend/sessions/*.json` 和 `backend/memory_module_v2/` 下的蒸馏与检索结果，确认对话、证据和对象已真实落盘。
+1. 发一条普通消息，感受流式输出。
+2. 打开右侧 Inspector，查看会话与关联文件。
+3. 新建或编辑一个 skill，观察下一轮是否按 `SKILL.md` 行为变化。
+4. 设置 `MEMORY_BACKEND=v2`，再问依赖历史语境的问题；可选切换 `MEMORY_V2_INJECT` 感受工具注入与强注入差异。
+5. 在 `backend/sessions/*.json` 与 `memory_module_v2` 相关存储中对照蒸馏结果与检索命中，确认数据真实落盘、可追溯。
 
 ## memory_module_v2 是什么
 
-`memory_module_v2` 是这个项目的新一代长期记忆模块，核心目标不是“把所有内容都塞进向量库”，而是把长期记忆拆成两层：
+新一代长期记忆模块：目标不是「把所有内容塞进向量库」，而是 **索引层（可检索的结构化对象）** + **证据层（原始对话片段）**。
 
-- 索引层：从会话中蒸馏出的结构化对象，用于检索与排序
-- 证据层：原始对话片段，用于展示、回跳和注入
+检索链路概要：
 
-它的检索链路是：
+- **dense**：Postgres `pgvector` 检索蒸馏对象
+- **keyword**：BM25 检索 verbatim 证据
+- **fusion**：RRF 或加权合并
 
-- `dense`：通过 Postgres `pgvector` 检索蒸馏对象
-- `keyword`：通过 BM25 检索原始 `verbatim` 证据
-- `fusion`：通过 RRF 或加权融合合并结果
-
-这意味着：
-
-- Agent 最终看到的是可回跳的原始证据，而不是只读摘要
-- 记忆是可审计、可重建、可增量治理的
-- 中文和工程型查询可以同时兼顾语义匹配和关键词命中
+因此 Agent 侧更易展示 **可回跳的原文依据**；记忆可治理、可增量重建。BM25 目录、分片与重建策略等可通过 `BM25_*` 环境变量调优（见 `.env.example`）。
 
 ### 记忆开关
-
-记忆后端由统一环境变量控制：
 
 ```env
 MEMORY_BACKEND=v2
 ```
 
-v2 的注入方式由下面变量控制：
+v2 注入方式：
 
 ```env
 MEMORY_V2_INJECT=tool
 MEMORY_V2_INJECT_TOP_K=3
 ```
 
-可选值：
+| 值 | 含义 |
+| --- | --- |
+| `tool` | 注册 `search_memory`，由 Agent 决定何时检索（默认） |
+| `always` | 每轮自动注入检索上下文 |
+| `off` | 不向 Agent 自动注入（仍可按 API 使用记忆能力） |
 
-- `tool`：把 `search_memory` 作为工具交给 Agent 自己决定何时调用
-- `always`：每轮自动注入检索上下文
-- `off`：仅对外暴露 API，不自动注入
+可选：**单独指定蒸馏用模型**（与主对话模型一致或更小更快）：
 
-### v2 的关键能力
+```env
+# DISTILL_PROVIDER=...
+# DISTILL_MODEL=...
+# DISTILL_API_KEY=...
+# DISTILL_BASE_URL=...
+```
 
-- 结构化蒸馏：把 session 切成 exchange，再蒸馏为对象
-- 证据回跳：检索命中后，能回到原始 `session_id + ply range`
-- 混合检索：`pgvector` + BM25 + RRF 融合
-- 可治理：支持幂等入库、重建、增量扩展和阈值控制
-- 可观测：保留命中来源、分数和回跳信息，方便调试
+### v2 能力摘要
+
+- 结构化蒸馏（session → exchange → 对象）
+- 证据回跳（`session_id`、轮次范围）
+- `pgvector` + BM25 + 融合排序
+- 幂等入库、重建与阈值控制
+- 命中来源、分数与回跳信息便于调试
+
+### Guardian（前置安全）
+
+在 `backend/config/.env` 中常用项：
+
+```env
+GUARDIAN_ENABLED=true
+GUARDIAN_PROVIDER=openai
+GUARDIAN_MODEL=gpt-4.1-mini
+GUARDIAN_TIMEOUT_MS=1500
+GUARDIAN_FAIL_MODE=closed
+# closed：Guardian 调用失败时拦截；open：失败时放行
+```
+
+拦截文案可通过 `GUARDIAN_BLOCK_MESSAGE` 自定义。
+
+### 可选：对话摘要与 Checkpointer
+
+见 `backend/config/.env.example` 中 `SUMMARIZATION_ENABLED`、`SUMMARIZATION_TRIGGER_MESSAGES`、`SUMMARIZATION_KEEP_MESSAGES` 以及 `CHECKPOINTER` / `POSTGRES_DSN`（或分字段）说明。
 
 ## 项目结构
 
 ```text
-mini-openclaw/
+langchain-miniopenclaw-main/
 ├── backend/
-│   ├── api/                 # 聊天、会话、文件、压缩、配置接口
-│   ├── graph/               # Agent 构建、Prompt 组装、Session、Memory 注入
-│   ├── tools/               # terminal / python_repl / fetch_url / read_file / knowledge search
-│   ├── workspace/           # SOUL / IDENTITY / USER / AGENTS 等系统提示词组件
-│   ├── skills/              # 每个技能一个目录，核心是 SKILL.md
-│   ├── memory_module_v2/     # 结构化蒸馏 + Postgres + pgvector + BM25 混合检索
-│   ├── knowledge/           # 本地知识库
-│   ├── sessions/            # 会话 JSON
-│   ├── storage/             # 旧版/通用缓存与索引
-│   ├── app.py               # FastAPI 入口
-│   └── SKILLS_SNAPSHOT.md   # 技能快照
+│   ├── api/                  # 聊天、会话、文件、压缩、配置、token 等
+│   ├── config/               # 配置加载、运行时 config.json、.env
+│   ├── graph/                # Agent 工厂、LLM、Guardian、Checkpointer
+│   ├── tools/                # terminal / python_repl / fetch_url / read_file / knowledge 等
+│   ├── workspace/            # SOUL / IDENTITY / USER / AGENTS 等系统提示组件
+│   ├── skills/               # 技能目录，核心为 SKILL.md
+│   ├── memory_module_v1/     # 旧版长期记忆md及所有sessions
+│   ├── memory_module_v2/     # 蒸馏、Postgres、pgvector、BM25、融合检索
+│   ├── storage/              # 缓存与索引数据
+│   ├── app.py                # FastAPI 入口
+│   ├── docs                  # 一些SPEC文件，以及memory_module_v2的原版论文
 └── frontend/
     └── src/
-        ├── app/             # 页面入口
-        ├── components/      # 三栏 UI、聊天面板、检索卡片、编辑器
-        └── lib/             # API 客户端与全局状态
+        ├── app/
+        ├── components/
+        └── lib/
 ```
 
 ## 核心概念
 
 ### 1. 文件即记忆
 
-本项目不是完全不用向量索引，而是把“文件”当作事实源：
-
-- 真正会话记录是 `sessions/*.json`
-- `memory_module_v2` 负责把会话蒸馏成可检索的结构化对象
-- Postgres 与 BM25 负责构建可丢弃、可重建的索引缓存
-
-也就是说：
-
-- 你能直接读懂 Agent 的记忆来源
-- 你能手动修改会话与文件，再重新蒸馏
-- 就算索引删了，也能从源文件重建
+- 会话事实源：`sessions/*.json`
+- `memory_module_v2`：把会话蒸馏为可检索对象，并保留指向原文的证据
+- 向量与 BM25 索引为 **可重建缓存** — 删了也能从源文件拉回
 
 ### 2. 技能即插件
 
-技能不是 Python 函数注册，而是目录中的 `SKILL.md`：
-
-- `backend/skills/get_weather/SKILL.md`
-- `backend/skills/web-search/SKILL.md`
-- `backend/skills/retry-lesson-capture/SKILL.md`
-
-Agent 会先读取 `SKILLS_SNAPSHOT.md` 知道有哪些技能，再按需读取具体 skill 文件。
-
-这意味着：
-
-- 扩展能力更轻
-- 技能更容易审查
-- 适合面试展示和教学演示
+技能是目录中的 `SKILL.md`（例如 `backend/skills/get_weather/SKILL.md`）。Agent 先读 `SKILLS_SNAPSHOT.md` 再按需深入具体技能文件，便于审查与迭代。
 
 ### 3. Prompt 可解释
 
-每次请求都会重新拼装系统提示词，来源包括：
+系统提示每次请求拼装，典型来源包括：
 
 - `SKILLS_SNAPSHOT.md`
-- `workspace/SOUL.md`
-- `workspace/IDENTITY.md`
-- `workspace/USER.md`
-- `workspace/AGENTS.md`
-- `memory_module_v2` 的检索结果（启用 v2 时）
+- `workspace/SOUL.md`、`IDENTITY.md`、`USER.md`、`AGENTS.md`
+- （启用 v2 时）记忆检索结果
 
-所以你改完文件，下一轮请求立刻生效。
+修改这些文件后，**下一轮请求即可生效**（无需改 Python 业务代码）。
 
 ## 致谢
-初版思路参考 （https://github.com/lyxhnu/langchain-miniopenclaw）
-
+memory_module_v2的思路论文来源（https://arxiv.org/html/2603.13017v1）
+初版项目思路参考 [lyxhnu/langchain-miniopenclaw](https://github.com/lyxhnu/langchain-miniopenclaw)。

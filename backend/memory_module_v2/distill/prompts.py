@@ -31,7 +31,7 @@ Distill the following conversation exchange into a structured memory object.
 
 输出一个 JSON 对象，包含以下字段（语言必须与原始对话一致，中文对话就用中文填写）：
 
-- "exchange_core": 1-2 句话概括核心意图/结论，只能使用原文中出现的词汇。
+- "exchange_core": 1-2 句话概括用户提问+助手回答的核心意图/结论，只能使用原文中出现的词汇。
   (1-2 sentences summarizing intent/outcome, using ONLY vocabulary from the exchange.)
 - "specific_context": 一个从原文中近乎逐字复制的具体细节（代码片段、文件路径、报错信息或配置细节）。
   (One specific detail copied nearly verbatim — a code snippet, file path, error message, or config detail.)

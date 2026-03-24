@@ -12,6 +12,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
+from graph.guardian import build_guardian_middleware
 from graph.checkpointer import get_checkpointer
 from service.prompt_builder import build_system_prompt
 from graph.llm import build_llm_config_from_settings, get_llm
@@ -52,6 +53,7 @@ class AgentConfig:
     tools: list[BaseTool]
     system_prompt: str
     checkpointer: Any | None = None
+    guardian_enabled: bool = True
     use_summarization: bool = False
     summarization_trigger_messages: int = DEFAULT_SUMMARIZATION_TRIGGER_MESSAGES
     summarization_keep_messages: int = DEFAULT_SUMMARIZATION_KEEP_MESSAGES
@@ -78,6 +80,7 @@ def build_agent_config(
         tools=tools,
         system_prompt=prompt,
         checkpointer=checkpointer,
+        guardian_enabled=settings.guardian_enabled,
         use_summarization=use_summarization,
         summarization_trigger_messages=_summarization_trigger_messages(),
         summarization_keep_messages=_summarization_keep_messages(),
@@ -85,8 +88,10 @@ def build_agent_config(
 
 
 def create_agent_from_config(config: AgentConfig) -> AgentGraph:
-    """根据 AgentConfig 创建带 checkpointer、可选 SummarizationMiddleware 的 agent graph。"""
+    """根据 AgentConfig 创建带 checkpointer、可选 Guardian / Summarization 的 agent graph。"""
     middleware: list[Any] = []
+    if config.guardian_enabled:
+        middleware.append(build_guardian_middleware())
     if config.use_summarization:
         middleware.append(
             SummarizationMiddleware(

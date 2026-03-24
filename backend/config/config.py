@@ -64,6 +64,14 @@ class Settings:
     embedding_model: str
     embedding_api_key: str | None
     embedding_base_url: str
+    guardian_enabled: bool = True
+    guardian_provider: str = "openai"
+    guardian_model: str = LLM_PROVIDER_DEFAULTS["openai"]["model"]
+    guardian_api_key: str | None = None
+    guardian_base_url: str = LLM_PROVIDER_DEFAULTS["openai"]["base_url"]
+    guardian_timeout_ms: int = 1500
+    guardian_fail_mode: str = "closed"
+    guardian_block_message: str = "检测到潜在提示词攻击风险，本次请求已被拦截。"
     component_char_limit: int = 20_000
     terminal_timeout_seconds: int = 30
 
@@ -93,6 +101,43 @@ def _normalize_provider(
     if normalized in defaults:
         return normalized
     return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
+def _resolve_guardian_fail_mode() -> str:
+    value = (os.getenv("GUARDIAN_FAIL_MODE") or "closed").strip().lower()
+    if value in {"open", "closed"}:
+        return value
+    return "closed"
+
+
+def _resolve_guardian_model(provider: str) -> str:
+    return _first_env("GUARDIAN_MODEL") or LLM_PROVIDER_DEFAULTS[provider]["model"]
+
+
+def _resolve_guardian_base_url(provider: str) -> str:
+    return _first_env("GUARDIAN_BASE_URL") or LLM_PROVIDER_DEFAULTS[provider]["base_url"]
 
 
 def _resolve_llm_api_key(provider: str) -> str | None:
@@ -162,6 +207,11 @@ def get_settings() -> Settings:
         default="bailian",
         defaults=EMBEDDING_PROVIDER_DEFAULTS,
     )
+    guardian_provider = _normalize_provider(
+        os.getenv("GUARDIAN_PROVIDER"),
+        default="openai",
+        defaults=LLM_PROVIDER_DEFAULTS,
+    )
 
     return Settings(
         backend_dir=backend_dir,
@@ -174,13 +224,24 @@ def get_settings() -> Settings:
         embedding_model=_resolve_embedding_model(embedding_provider),
         embedding_api_key=_resolve_embedding_api_key(embedding_provider),
         embedding_base_url=_resolve_embedding_base_url(embedding_provider),
+        guardian_enabled=_env_bool("GUARDIAN_ENABLED", True),
+        guardian_provider=guardian_provider,
+        guardian_model=_resolve_guardian_model(guardian_provider),
+        guardian_api_key=_first_env("GUARDIAN_API_KEY"),
+        guardian_base_url=_resolve_guardian_base_url(guardian_provider),
+        guardian_timeout_ms=_env_int("GUARDIAN_TIMEOUT_MS", 1500),
+        guardian_fail_mode=_resolve_guardian_fail_mode(),
+        guardian_block_message=(
+            os.getenv("GUARDIAN_BLOCK_MESSAGE")
+            or "检测到潜在提示词攻击风险，本次请求已被拦截。"
+        ),
     )
 
 
 class RuntimeConfigManager:
     def __init__(self, config_path: Path) -> None:
         self._config_path = config_path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._default_config = {"rag_mode": False}
 
     def load(self) -> dict[str, Any]:
@@ -194,13 +255,14 @@ class RuntimeConfigManager:
                 return dict(self._default_config)
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(self._default_config)
-        merged.update(payload)
-        self._config_path.write_text(
-            json.dumps(merged, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return merged
+        with self._lock:
+            merged = dict(self._default_config)
+            merged.update(payload)
+            self._config_path.write_text(
+                json.dumps(merged, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return merged
 
     def get_rag_mode(self) -> bool:
         return bool(self.load().get("rag_mode", False))

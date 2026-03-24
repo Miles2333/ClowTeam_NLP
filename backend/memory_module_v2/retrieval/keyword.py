@@ -74,7 +74,10 @@ class _BM25Shard:
         self.corpus_size = len(self.docs)
 
     def search(self, query: str, top_k: int = 200) -> list[dict[str, Any]]:
-        if self.bm25 is None or not self.docs:
+        # `self.docs` is only populated during `build()`.
+        # When loading from cache (`load()`), we intentionally don't store full tokenized docs.
+        # bm25 + exchange_ids are sufficient to compute scores and map to exchange_id.
+        if self.bm25 is None:
             return []
 
         query_tokens = tokenize(query)
