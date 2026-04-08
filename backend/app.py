@@ -22,10 +22,10 @@ from tools.skills_scanner import refresh_snapshot
 async def lifespan(_: FastAPI):
     settings = get_settings()
     await init_checkpointer_async()
-    # 使用项目根目录作为工作区根目录，包含 workspace/、skills/ 等
-    refresh_snapshot(settings.project_root)
-    agent_manager.initialize(settings.project_root)
-    memory_indexer.configure(settings.project_root)
+    # 这些组件都按 backend 内相对路径组织（workspace/、skills/、memory_module_v1/）
+    refresh_snapshot(settings.backend_dir)
+    agent_manager.initialize(settings.backend_dir)
+    memory_indexer.configure(settings.backend_dir)
     memory_indexer.rebuild_index()
     yield
 

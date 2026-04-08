@@ -174,8 +174,8 @@ def _request_guardian_label(user_text: str) -> str:
     from config import get_settings
 
     settings = get_settings()
-    if not settings.guardian_api_key:
-        raise RuntimeError("GUARDIAN_API_KEY is missing")
+    # if not settings.guardian_api_key:
+    #     raise RuntimeError("GUARDIAN_API_KEY is missing")
 
     from langchain_openai import ChatOpenAI
 

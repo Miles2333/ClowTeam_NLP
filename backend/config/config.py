@@ -54,6 +54,7 @@ PROVIDER_ALIASES = {
 
 @dataclass(frozen=True)
 class Settings:
+    config_dir: Path
     backend_dir: Path
     project_root: Path
     llm_provider: str
@@ -76,10 +77,23 @@ class Settings:
     terminal_timeout_seconds: int = 30
 
 
-def _load_env_file() -> Path:
-    backend_dir = Path(__file__).resolve().parent
-    load_dotenv(backend_dir / ".env")
-    return backend_dir
+@dataclass(frozen=True)
+class ProjectPaths:
+    config_dir: Path
+    backend_dir: Path
+    project_root: Path
+
+
+def _load_env_file() -> ProjectPaths:
+    config_dir = Path(__file__).resolve().parent
+    backend_dir = config_dir.parent
+    project_root = backend_dir.parent
+    load_dotenv(config_dir / ".env")
+    return ProjectPaths(
+        config_dir=config_dir,
+        backend_dir=backend_dir,
+        project_root=project_root,
+    )
 
 
 def _first_env(*names: str) -> str | None:
@@ -194,8 +208,7 @@ def _resolve_embedding_base_url(provider: str) -> str:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    backend_dir = _load_env_file()
-    project_root = backend_dir.parent
+    paths = _load_env_file()
 
     llm_provider = _normalize_provider(
         os.getenv("LLM_PROVIDER"),
@@ -214,8 +227,9 @@ def get_settings() -> Settings:
     )
 
     return Settings(
-        backend_dir=backend_dir,
-        project_root=project_root,
+        config_dir=paths.config_dir,
+        backend_dir=paths.backend_dir,
+        project_root=paths.project_root,
         llm_provider=llm_provider,
         llm_model=_resolve_llm_model(llm_provider),
         llm_api_key=_resolve_llm_api_key(llm_provider),
@@ -271,4 +285,4 @@ class RuntimeConfigManager:
         return self.save({"rag_mode": enabled})
 
 
-runtime_config = RuntimeConfigManager(get_settings().backend_dir / "config.json")
+runtime_config = RuntimeConfigManager(get_settings().config_dir / "config.json")
