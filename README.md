@@ -58,6 +58,7 @@
 - LangChain 1.x（`create_agent` + 可选中间件）
 - OpenAI 兼容的多厂商 Chat / Embedding API
 - Langfuse
+- Pgvector
 
 ### 前端
 
@@ -75,7 +76,8 @@
 ## 快速开始
 
 ### 环境要求
-
+【建议本地提前安装好Langfuse，Langfuse自带POSTGRES可以免于二次重复安装，比如说我是本次docker安装的，只需在docker compose文件里把POSTGRES替换为有pgvector插件的镜像就好】
+【不想装Langfuse的话就单独装好pgvector】
 - Python 3.10+
 - Node.js 18+、npm
 
@@ -163,6 +165,8 @@ MEMORY_V2_INJECT_TOP_K=3
 - 命中来源、分数与回跳信息便于调试
 
 ### Guardian（前置安全）
+
+我是用的自己微调的Qwen3.5 4b，建议大家去尝试自己微调一个，或者设置GUARDIAN_ENABLED=false暂时跳过此功能
 
 在 `backend/config/.env` 中常用项：
 
