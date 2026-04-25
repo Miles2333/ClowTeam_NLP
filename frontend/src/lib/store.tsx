@@ -7,6 +7,7 @@ import {
   createSession,
   deleteSession,
   getRagMode,
+  getRecommendations,
   getSessionHistory,
   getSessionTokens,
   listSessions,
@@ -16,7 +17,11 @@ import {
   saveFile,
   setRagMode,
   streamChat,
+  type ExperimentMode,
+  type Recommendation,
   type RetrievalResult,
+  type RoleOpinion,
+  type RoutingInfo,
   type SessionSummary,
   type ToolCall
 } from "@/lib/api";
@@ -27,6 +32,9 @@ type Message = {
   content: string;
   toolCalls: ToolCall[];
   retrievals: RetrievalResult[];
+  roleOpinions?: RoleOpinion[];
+  routing?: RoutingInfo | null;
+  guardianBlocked?: { reason: string; message: string } | null;
 };
 
 type TokenStats = {
@@ -49,6 +57,10 @@ type AppStore = {
   sidebarWidth: number;
   inspectorWidth: number;
   tokenStats: TokenStats | null;
+  experimentMode: ExperimentMode;
+  recommendations: Recommendation[];
+  setExperimentMode: (mode: ExperimentMode) => void;
+  refreshRecommendations: () => Promise<void>;
   createNewSession: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
   sendMessage: (value: string) => Promise<void>;
@@ -103,6 +115,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sidebarWidth, setSidebarWidth] = useState(308);
   const [inspectorWidth, setInspectorWidth] = useState(360);
   const [tokenStats, setTokenStats] = useState<TokenStats | null>(null);
+  const [experimentMode, setExperimentMode] = useState<ExperimentMode>("single");
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
 
   const editableFiles = useMemo(
     () => [...FIXED_FILES, ...skills.map((skill) => skill.path)],
@@ -184,13 +198,71 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     try {
       await streamChat(
-        { message: value.trim(), session_id: sessionId },
+        { message: value.trim(), session_id: sessionId, experiment_mode: experimentMode },
         {
           onEvent(event, data) {
             if (event === "retrieval") {
               patchAssistant((message) => ({
                 ...message,
                 retrievals: (data.results as RetrievalResult[]) ?? []
+              }));
+              return;
+            }
+
+            if (event === "retrieval_v2") {
+              patchAssistant((message) => ({
+                ...message,
+                retrievals: [
+                  {
+                    text: String(data.context ?? ""),
+                    score: 1,
+                    source: "memory_v2 (shared)"
+                  }
+                ]
+              }));
+              return;
+            }
+
+            if (event === "role_opinion") {
+              const opinion: RoleOpinion = {
+                role: String(data.role ?? ""),
+                role_label: String(data.role_label ?? ""),
+                content: String(data.content ?? ""),
+                evidence: (data.evidence as string[]) ?? []
+              };
+              patchAssistant((message) => ({
+                ...message,
+                roleOpinions: [...(message.roleOpinions ?? []), opinion]
+              }));
+              return;
+            }
+
+            if (event === "routing") {
+              patchAssistant((message) => ({
+                ...message,
+                routing: {
+                  roles: (data.roles as string[]) ?? [],
+                  reason: String(data.reason ?? "")
+                }
+              }));
+              return;
+            }
+
+            if (event === "guardian_blocked") {
+              patchAssistant((message) => ({
+                ...message,
+                guardianBlocked: {
+                  reason: String(data.reason ?? ""),
+                  message: String(data.message ?? "请求被安全守卫拦截")
+                }
+              }));
+              return;
+            }
+
+            if (event === "synthesis_token") {
+              patchAssistant((message) => ({
+                ...message,
+                content: `${message.content}${String(data.content ?? "")}`
               }));
               return;
             }
@@ -347,6 +419,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await refreshSessions();
   }
 
+  async function refreshRecommendations() {
+    try {
+      const result = await getRecommendations();
+      setRecommendations(result.recommendations ?? []);
+    } catch (error) {
+      console.warn("Failed to load recommendations", error);
+      setRecommendations([]);
+    }
+  }
+
   useEffect(() => {
     void (async () => {
       const [initialSessions, rag, initialSkills] = await Promise.all([
@@ -371,6 +453,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const file = await loadFile("memory_module_v1/long_term_memory/MEMORY.md");
       setInspectorPath(file.path);
       setInspectorContent(file.content);
+
+      void refreshRecommendations();
     })();
   }, []);
 
@@ -388,6 +472,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sidebarWidth,
     inspectorWidth,
     tokenStats,
+    experimentMode,
+    recommendations,
+    setExperimentMode,
+    refreshRecommendations,
     createNewSession,
     selectSession,
     sendMessage,

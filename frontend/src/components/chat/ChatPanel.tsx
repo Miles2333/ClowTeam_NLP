@@ -4,24 +4,34 @@ import { useEffect, useRef } from "react";
 
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatMessage } from "@/components/chat/ChatMessage";
+import { RecommendBubbles } from "@/components/chat/RecommendBubbles";
 import { useAppStore } from "@/lib/store";
 
 export function ChatPanel() {
-  const { messages, sendMessage, isStreaming, tokenStats } = useAppStore();
+  const { messages, sendMessage, isStreaming, tokenStats, experimentMode } = useAppStore();
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const modeLabel: Record<string, string> = {
+    single: "单 Agent 基线",
+    multi_no_memory: "多 Agent (无共享记忆)",
+    multi_memory: "多 Agent + 共享记忆",
+    multi_full: "多 Agent + 记忆 + 守卫"
+  };
+
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col gap-4">
       <div className="panel flex items-center justify-between rounded-[30px] px-5 py-4">
         <div>
           <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-ink-soft)]">
-            Conversation
+            ClawTeam 协作诊疗
           </p>
-          <h2 className="text-lg font-semibold tracking-[-0.04em]">实时对话与工具回放</h2>
+          <h2 className="text-lg font-semibold tracking-[-0.04em]">
+            当前模式: {modeLabel[experimentMode] ?? experimentMode}
+          </h2>
         </div>
         <div className="mono text-sm text-[var(--color-ink-soft)]">
           {tokenStats ? `${tokenStats.total_tokens} tokens` : "No metrics yet"}
@@ -33,15 +43,18 @@ export function ChatPanel() {
           {!messages.length && (
             <div className="rounded-[28px] border border-dashed border-[var(--color-line)] bg-white/45 p-8">
               <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-ink-soft)]">
-                Ready
+                ClawTeam Ready
               </p>
               <h3 className="mt-2 text-3xl font-semibold tracking-[-0.05em]">
-                一个本地、透明、文件驱动的 Agent 工作台
+                医疗多智能体协作诊疗系统
               </h3>
               <p className="mt-3 max-w-2xl text-[var(--color-ink-soft)]">
-                你可以直接提问，也可以在右侧编辑 Memory、Skills 和 Workspace 文件。
-                所有系统提示、会话和工具执行都可追踪。
+                主治医生 · 临床药师 · 影像科医生 协同会诊。共享长期记忆、安全守卫、可解释证据链。
+                请描述你的症状或疑问，或点击下方推荐问题快速开始。
               </p>
+              <div className="mt-5">
+                <RecommendBubbles />
+              </div>
             </div>
           )}
 
@@ -52,6 +65,9 @@ export function ChatPanel() {
               retrievals={message.retrievals}
               role={message.role}
               toolCalls={message.toolCalls}
+              roleOpinions={message.roleOpinions}
+              routing={message.routing}
+              guardianBlocked={message.guardianBlocked}
             />
           ))}
           <div ref={endRef} />

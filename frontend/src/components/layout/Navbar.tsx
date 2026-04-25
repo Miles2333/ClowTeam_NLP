@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Database, FileStack, Plus, Sparkles, Wrench, SlidersHorizontal } from "lucide-react";
+import { Database, FileStack, FlaskConical, Plus, Sparkles, Wrench, SlidersHorizontal } from "lucide-react";
 
 import { useAppStore } from "@/lib/store";
 import { InspectorPanel } from "@/components/editor/InspectorPanel";
+import type { ExperimentMode } from "@/lib/api";
 
 export function Navbar() {
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
@@ -22,8 +23,17 @@ export function Navbar() {
     compressCurrentSession,
     renameCurrentSession,
     sessions,
-    currentSessionId
+    currentSessionId,
+    experimentMode,
+    setExperimentMode
   } = useAppStore();
+
+  const MODE_OPTIONS: { value: ExperimentMode; label: string }[] = [
+    { value: "single", label: "单 Agent 基线" },
+    { value: "multi_no_memory", label: "多 Agent (无记忆)" },
+    { value: "multi_memory", label: "多 Agent + 记忆" },
+    { value: "multi_full", label: "多 Agent + 记忆 + 守卫" }
+  ];
 
   const currentTitle =
     sessions.find((session) => session.id === currentSessionId)?.title ?? "新会话";
@@ -36,7 +46,7 @@ export function Navbar() {
         </div>
         <div>
           <p className="text-xs uppercase tracking-[0.32em] text-[var(--color-ink-soft)]">
-            Mini-OpenClaw
+            ClawTeam 医疗协作
           </p>
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-semibold tracking-[-0.04em]">{currentTitle}</h1>
@@ -57,6 +67,20 @@ export function Navbar() {
       </div>
 
       <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 rounded-full border border-[var(--color-line)] bg-white/60 px-3 py-1.5 text-sm">
+          <FlaskConical size={14} className="text-ocean" />
+          <select
+            className="bg-transparent text-sm focus:outline-none cursor-pointer"
+            value={experimentMode}
+            onChange={(e) => setExperimentMode(e.target.value as ExperimentMode)}
+          >
+            {MODE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <button
           className="flex items-center gap-2 rounded-full border border-[var(--color-line)] bg-white/60 px-4 py-2 text-sm"
           onClick={() => void createNewSession()}

@@ -28,12 +28,12 @@ export function ChatInput({
             setValue("");
           }
         }}
-        placeholder="输入你的问题，Cmd/Ctrl + Enter 发送"
+        placeholder="描述你的症状或医疗疑问，Cmd/Ctrl + Enter 发送"
         value={value}
       />
       <div className="mt-3 flex items-center justify-between">
         <p className="text-sm text-[var(--color-ink-soft)]">
-          支持工具调用、Memory 检索和多段响应。
+          支持多角色会诊、共享记忆检索、安全守卫拦截。
         </p>
         <button
           className="flex items-center gap-2 rounded-full bg-ocean px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:bg-[rgba(15,139,141,0.45)]"

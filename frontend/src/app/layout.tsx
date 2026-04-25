@@ -15,8 +15,8 @@ const monoFont = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mini-OpenClaw",
-  description: "A transparent, file-first local AI agent system."
+  title: "ClawTeam 医疗协作助手",
+  description: "基于多智能体协作的医疗诊疗咨询系统：主治医生 · 临床药师 · 影像科。"
 };
 
 export default function RootLayout({

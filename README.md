@@ -1,4 +1,63 @@
-# Mini-OpenClaw
+# ClowTeam — 医疗多智能体协作诊疗系统
+
+> 基于 [miniOpenClaw](https://github.com/Miles2333/miniOpenClaw) 改造的医疗领域多 Agent 系统，由**主治医生 / 临床药师 / 影像科医生**三个角色协同会诊，配合共享长期记忆和医疗安全守卫。
+
+## ClowTeam 核心能力
+
+- 🩺 **多角色协作**：协调器 + 3 个专科角色 Agent 并行会诊，最终融合综合结论
+- 🧠 **共享长期记忆**：3 个角色读取同一记忆池（基于 miniOpenClaw memory_module_v2）
+- 🛡️ **医疗安全守卫**：拦截提示注入、越权诊断、隐私诱导、危险医疗建议
+- 🧪 **4 组消融实验**：单 Agent / 多 Agent 无记忆 / 多 Agent + 记忆 / 多 Agent + 记忆 + 守卫
+- 💡 **首页推荐气泡**：基于近期会话主题动态生成推荐问题
+- 📊 **实验日志追踪**：每次请求落盘 JSONL，方便论文实验数据收集
+
+## ClowTeam 架构图
+
+```
+用户 ─▶ Guardian（医疗安全守卫）
+         │
+         ▼
+       Coordinator（协调器：路由 + 融合）
+         │
+    ┌────┼────┐
+    ▼    ▼    ▼
+  主治  药师  影像科
+    │    │    │
+    └────┴────┘
+         │
+         ▼
+   共享长期记忆（PG + pgvector + BM25）
+         │
+         ▼
+   综合诊疗建议（带角色证据链）
+```
+
+## ClowTeam 新增/修改模块
+
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| 协调器 | `backend/graph/coordinator.py` | 路由决策 + 并行会诊 + 融合输出 |
+| 角色 Agent | `backend/graph/roles/` | 主治 / 药师 / 影像科基类与实现 |
+| 角色 Prompt | `backend/workspace/roles/` | 三个角色的系统提示 |
+| 实验框架 | `backend/service/experiment.py` | 4 种实验模式 + 日志记录 |
+| 推荐 API | `backend/api/recommend.py` | 首页推荐气泡接口 |
+| 角色卡片 UI | `frontend/src/components/chat/RoleOpinionCard.tsx` | 单角色意见展示 |
+| 推荐气泡 UI | `frontend/src/components/chat/RecommendBubbles.tsx` | 首页推荐问题 |
+
+## 实验模式切换
+
+前端 Navbar 下拉框切换，或 API 请求带 `experiment_mode`：
+
+| 模式 | 说明 |
+|------|------|
+| `single` | 单 Agent 基线（原 miniOpenClaw 行为） |
+| `multi_no_memory` | 多角色协作，无共享记忆 |
+| `multi_memory` | 多角色协作 + 共享记忆 |
+| `multi_full` | 多角色协作 + 共享记忆 + Guardian 守卫 |
+
+---
+
+# 上游：Mini-OpenClaw
 
 **本地运行、文件优先、可审计** 的 AI Agent 工作台，一定程度上解决Openclaw的长期记忆及安全问题：
 1. 对话与证据落盘为本地 JSON；

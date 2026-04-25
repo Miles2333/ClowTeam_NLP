@@ -10,6 +10,29 @@ export type RetrievalResult = {
   source: string;
 };
 
+export type RoleOpinion = {
+  role: string;
+  role_label: string;
+  content: string;
+  evidence?: string[];
+};
+
+export type RoutingInfo = {
+  roles: string[];
+  reason: string;
+};
+
+export type Recommendation = {
+  id: string;
+  text: string;
+};
+
+export type ExperimentMode =
+  | "single"
+  | "multi_no_memory"
+  | "multi_memory"
+  | "multi_full";
+
 export type SessionSummary = {
   id: string;
   title: string;
@@ -131,10 +154,15 @@ export async function compressSession(sessionId: string) {
   );
 }
 
+export async function getRecommendations() {
+  return request<{ recommendations: Recommendation[] }>("/recommend");
+}
+
 export async function streamChat(
   payload: {
     message: string;
     session_id: string;
+    experiment_mode?: ExperimentMode;
   },
   handlers: StreamHandlers
 ) {
@@ -145,7 +173,8 @@ export async function streamChat(
     },
     body: JSON.stringify({
       ...payload,
-      stream: true
+      stream: true,
+      experiment_mode: payload.experiment_mode ?? "single"
     })
   });
 
