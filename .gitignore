@@ -30,3 +30,15 @@ frontend/.npm-cache/
 *.log
 .DS_Store
 Thumbs.db
+
+# ClawTeam additions
+backend/storage/experiment_logs/*.jsonl
+backend/eval/datasets/data/
+backend/eval/models/
+backend/models/
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+.ipynb_checkpoints/
+wandb/

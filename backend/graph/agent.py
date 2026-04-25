@@ -9,8 +9,10 @@ import logging
 from config import get_settings, runtime_config
 from graph.context import RequestContext
 from graph.agent_factory import build_agent_config, create_agent_from_config
+from graph.coordinator import Coordinator
 from service.memory_indexer import memory_indexer
 from service.session_manager import SessionManager
+from service.experiment import ExperimentMode, ExperimentLog, experiment_logger
 from graph.llm import build_llm_config_from_settings, get_llm
 from tools import get_all_tools
 from memory_module_v2.service.config import get_memory_backend, get_memory_v2_inject_mode
@@ -36,11 +38,14 @@ class AgentManager:
         self.base_dir: Path | None = None
         self.session_manager: SessionManager | None = None
         self.tools = []
+        self.coordinator: Coordinator | None = None
 
     def initialize(self, base_dir: Path) -> None:
         self.base_dir = base_dir
         self.session_manager = SessionManager(base_dir)
         self.tools = get_all_tools(base_dir)
+        self.coordinator = Coordinator(base_dir)
+        experiment_logger.configure(base_dir)
 
     # 用于generate_title()和summarize_history()
     def _build_chat_model(self):
@@ -228,6 +233,106 @@ class AgentManager:
             except Exception as exc:
                 print("[langfuse] 更新 usage 失败：", repr(exc))
         yield {"type": "done", "content": final_content}
+
+    async def astream_multi_agent(
+        self,
+        message: str,
+        history: list[dict[str, Any]],
+        context: RequestContext | None = None,
+        experiment_mode: ExperimentMode = ExperimentMode.MULTI_FULL,
+    ):
+        """多 Agent 模式流式输出（ClawTeam 协作诊疗）。
+
+        事件类型：
+        - role_opinion: 单个角色的诊断意见
+        - synthesis_token: 融合结论的流式 token
+        - retrieval_v2: 共享记忆检索结果
+        - done: 最终完整结论
+        """
+        if self.base_dir is None or self.coordinator is None:
+            raise RuntimeError("AgentManager is not initialized")
+
+        # Guardian 前置检查（仅 MULTI_FULL 模式启用）
+        if experiment_mode.use_guardian:
+            from graph.guardian import evaluate_guardian_input
+            guardian_result = evaluate_guardian_input(message)
+            if guardian_result.is_blocked:
+                yield {
+                    "type": "guardian_blocked",
+                    "label": guardian_result.label,
+                    "reason": guardian_result.reason_code,
+                    "message": guardian_result.block_message,
+                }
+                yield {"type": "done", "content": guardian_result.block_message}
+                return
+
+        # 共享记忆检索
+        memory_context = ""
+        if experiment_mode.use_shared_memory and get_memory_backend() == "v2":
+            try:
+                memory_context = build_memory_context(message) or ""
+                if memory_context:
+                    yield {
+                        "type": "retrieval_v2",
+                        "query": message,
+                        "context": memory_context,
+                    }
+            except Exception as exc:
+                logger.warning("Memory v2 retrieval failed in multi-agent mode: %s", exc)
+        elif experiment_mode.use_shared_memory and get_memory_backend() == "v1":
+            retrievals = memory_indexer.retrieve(message, top_k=3)
+            if retrievals:
+                yield {"type": "retrieval", "query": message, "results": retrievals}
+                memory_context = self._format_retrieval_context(retrievals)
+
+        # 多角色会诊
+        result = await self.coordinator.consult(
+            query=message,
+            memory_context=memory_context,
+        )
+
+        # 发送每个角色的意见
+        for opinion in result.opinions:
+            yield {
+                "type": "role_opinion",
+                "role": opinion.role.value,
+                "role_label": opinion.role_label,
+                "content": opinion.content,
+                "evidence": opinion.evidence,
+            }
+
+        # 发送路由决策信息（用于前端解释）
+        if result.routing:
+            yield {
+                "type": "routing",
+                "roles": [r.value for r in result.routing.roles_needed],
+                "reason": result.routing.reason,
+            }
+
+        # 流式发送融合结论（分段发送以模拟流式）
+        synthesis = result.synthesis
+        # 简单分块流式发送
+        chunk_size = 40
+        for i in range(0, len(synthesis), chunk_size):
+            chunk = synthesis[i:i + chunk_size]
+            yield {"type": "synthesis_token", "content": chunk}
+
+        # 实验日志
+        session_id = context.thread_id if context else "default"
+        log_entry = ExperimentLog(
+            session_id=session_id,
+            experiment_mode=experiment_mode.value,
+            query=message,
+            roles_called=[op.role.value for op in result.opinions],
+            routing_reason=result.routing.reason if result.routing else "",
+            role_opinions={op.role.value: op.content for op in result.opinions},
+            final_answer=synthesis,
+            guardian_verdict="safe" if experiment_mode.use_guardian else "skipped",
+            latency_ms=result.latency_ms,
+        )
+        experiment_logger.log(log_entry)
+
+        yield {"type": "done", "content": synthesis}
 
     async def generate_title(self, first_user_message: str) -> str:
         prompt = (

@@ -14,6 +14,7 @@ from graph.context import build_request_context
 from graph.agent import agent_manager
 from graph.checkpointer import reconnect_checkpointer_async
 from memory_module_v2.service.config import get_memory_backend
+from service.experiment import ExperimentMode
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,10 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: str
     stream: bool = True
+    experiment_mode: str = Field(
+        default="single",
+        description="实验模式: single | multi_no_memory | multi_memory | multi_full",
+    )
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -58,6 +63,25 @@ async def chat(payload: ChatRequest):
     # 对话历史由 checkpointer 管理，不再从 SessionManager 传入
     history_for_agent: list[dict[str, Any]] = []
 
+    # 解析实验模式
+    try:
+        experiment_mode = ExperimentMode(payload.experiment_mode)
+    except ValueError:
+        experiment_mode = ExperimentMode.SINGLE_AGENT
+
+    def _select_stream():
+        """根据实验模式选择单 Agent 或多 Agent 流。"""
+        if experiment_mode.use_multi_agent:
+            return agent_manager.astream_multi_agent(
+                payload.message,
+                history_for_agent,
+                context=request_context,
+                experiment_mode=experiment_mode,
+            )
+        return agent_manager.astream(
+            payload.message, history_for_agent, context=request_context
+        )
+
     async def event_generator():
         retried = False
         while True:
@@ -65,14 +89,18 @@ async def chat(payload: ChatRequest):
             current_segment = _new_segment()
             emitted_any_event = False
             try:
-                async for event in agent_manager.astream(
-                    payload.message, history_for_agent, context=request_context
-                ):
+                async for event in _select_stream():
                     emitted_any_event = True
                     event_type = event["type"]
 
                     if event_type == "token":
                         current_segment["content"] += event.get("content", "")
+                    elif event_type == "synthesis_token":
+                        # 多 Agent 模式下，融合结论的流式 token
+                        current_segment["content"] += event.get("content", "")
+                    elif event_type in ("role_opinion", "routing", "guardian_blocked"):
+                        # 多 Agent 新事件：透传给前端，不进入 segment content
+                        pass
                     elif event_type == "tool_start":
                         current_segment["tool_calls"].append(
                             {

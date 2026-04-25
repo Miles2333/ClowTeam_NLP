@@ -1,1 +1,1 @@
-"""API routers for Mini-OpenClaw."""
+"""API routers for ClawTeam medical multi-agent system."""

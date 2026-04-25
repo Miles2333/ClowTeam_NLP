@@ -1,66 +1,34 @@
----
-name: 天气查询
-description: 查询指定城市的天气情况，并整理成适合直接回复用户的简洁结果。
----
+# Agent Guide
 
-## 经验教训
+## 核心原则
 
-[重要提示] wttr.in 接口可能不稳定或无法访问（已在 2026-03-10 遇到多次失败）。
-优先使用 Open-Meteo API，更稳定可靠。
+1. 文件优先。会话、长期记忆、技能和知识都应该落在本地文件中。
+2. 技能优先。若现有技能能解决问题，先读取对应 `SKILL.md` 再执行。
+3. 透明优先。工具调用、检索结果和记忆注入都要尽量可解释。
+4. 当用户表达 稳定偏好、长久设置或个人习惯 时：
+    先在当前回答中 复述并确认；
+    然后用简短的一两句话总结这条偏好；
+    将总结文本写入 workspace/USER.md，追加在“会话偏好记录”部分（通过提供的工具）。
+## 工具使用协议
 
-[2026-03-10] 当 `fetch_url` 或 `terminal curl` 出现超时/失败时，优先使用 `python_repl` + `requests` 库。不要重复尝试同一路径。
+- `read_file`: 读取技能、工作区文档和知识文件。
+- `terminal`: 仅在需要运行本地命令时使用。
+- `python_repl`: 仅用于短脚本和数据处理。
+- `fetch_url`: 获取网页或 JSON 接口内容。
+- `search_memory`: （仅 MEMORY_BACKEND=v2 + MEMORY_V2_INJECT=tool 时可用）检索跨会话的长期记忆，返回历史对话的蒸馏摘要和原始片段。当用户提到历史话题或需要回忆过去讨论时主动调用。
+- `distill_session`: （仅 MEMORY_BACKEND=v2 时可用）手动触发当前会话的蒸馏，将对话压缩为结构化记忆。
 
-## 执行步骤
+## Memory 协议
 
-### 方案一（优先）：Open-Meteo API + python_repl
+### v1 模式 (MEMORY_BACKEND=v1)
+- `memory_module_v1/long_term_memory/MEMORY.md` 是长期记忆主文件。
+- 通过 Chroma 向量检索动态注入相关片段。
+- 未检索到的记忆不应被假设为仍然可用。
 
-使用 `python_repl` 执行：
-
-```python
-import requests
-# 北京坐标
-lat, lon = 39.9042, 116.4074
-url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-resp = requests.get(url, timeout=10)
-data = resp.json()
-```
-
-### 方案二（备用）：wttr.in + python_repl
-
-```python
-import requests
-url = "https://wttr.in/Beijing?format=j1"
-resp = requests.get(url, timeout=10)
-data = resp.json()
-```
-
-### 方案三（最后手段）：fetch_url 或 terminal curl
-
-仅在前两者都失败时尝试，但成功率较低。
-
-## 故障排查
-
-如果遇到以下情况：
-- `fetch_url` 返回 "Fetch failed" 或超时
-- `terminal curl` 超过 30 秒无响应
-- `urllib.request` 超时
-
-立即切换到 `python_repl` + `requests` 库，并设置合理的 timeout 参数（建议 10-15 秒）。
-
-## 输出格式
-
-用中文给出简明结果，包括：
-- 温度
-- 天气状况（需将 weathercode 转换为中文描述）
-- 风速
-- 数据来源和时间
-
-## 天气代码对照表（Open-Meteo WMO Code）
-
-- 0: 晴朗
-- 1-3: 少云/多云
-- 45-48: 雾
-- 51-67: 雨
-- 71-77: 雪
-- 80-82: 阵雨
-- 95-99: 雷暴
+### v2 模式 (MEMORY_BACKEND=v2)
+- 长期记忆存储在 PostgreSQL + pgvector 中，由结构化蒸馏（distillation）产生。
+- 每次对话结束后自动异步蒸馏新的交换片段。
+- 检索方式取决于 `MEMORY_V2_INJECT` 配置：
+  - `tool`: agent 自主决定何时调用 `search_memory` 检索。
+  - `always`: 系统每轮自动检索并注入上下文。
+- 检索结果包含蒸馏对象（摘要）和原始对话证据（verbatim），优先引用证据。

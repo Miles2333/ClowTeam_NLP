@@ -1,1 +1,1 @@
-"""Core graph helpers for Mini-OpenClaw."""
+"""Core graph helpers for ClawTeam medical multi-agent system."""
