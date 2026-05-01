@@ -33,7 +33,10 @@ Thumbs.db
 
 # ClawTeam additions
 backend/storage/experiment_logs/*.jsonl
-backend/eval/datasets/data/
+# 训练数据子目录（大文件、自动生成）
+backend/eval/datasets/data/raw/
+backend/eval/datasets/data/oncology/
+backend/eval/datasets/data/training/
 backend/eval/models/
 backend/models/
 *.safetensors

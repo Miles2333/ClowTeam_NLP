@@ -22,9 +22,24 @@ export type RoutingInfo = {
   reason: string;
 };
 
+export type TumorBoardCase = {
+  id: string;
+  tumor_type: string;
+  subtype?: string;
+  stage?: string;
+  biomarker?: string;
+  title: string;
+  case: string;
+  tags?: string[];
+  complexity?: string;
+};
+
 export type Recommendation = {
   id: string;
   text: string;
+  reason?: string;
+  case_data?: TumorBoardCase | null;
+  score?: number;
 };
 
 export type ExperimentMode =
