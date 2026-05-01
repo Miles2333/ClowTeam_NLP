@@ -285,33 +285,58 @@ class AgentManager:
                 yield {"type": "retrieval", "query": message, "results": retrievals}
                 memory_context = self._format_retrieval_context(retrievals)
 
-        # 多角色会诊
-        result = await self.coordinator.consult(
-            query=message,
+        # 多角色会诊（v3.1 真协作 Harness：Round 1 → Round 2 → Round 3）
+        # 消融实验：根据 experiment_mode 决定是否跳过 Round 2
+        skip_round2 = experiment_mode.value in ("multi_no_memory",)  # E2 不走辩论
+        session = await self.coordinator.consult(
+            case=message,
             memory_context=memory_context,
+            skip_round2=skip_round2,
         )
 
-        # 发送每个角色的意见
-        for opinion in result.opinions:
+        # 发送复杂度评估结果
+        if session.complexity:
+            yield {
+                "type": "routing",  # 沿用前端事件名，意义改为"复杂度判断"
+                "roles": [op.role.value for op in session.round1_opinions],
+                "reason": (
+                    f"复杂度: {session.complexity.level.value} | "
+                    f"{session.complexity.reason}"
+                ),
+            }
+
+        # 发送 Round 1 各角色独立意见
+        for opinion in session.round1_opinions:
             yield {
                 "type": "role_opinion",
                 "role": opinion.role.value,
                 "role_label": opinion.role_label,
                 "content": opinion.content,
+                "round": 1,
                 "evidence": opinion.evidence,
             }
 
-        # 发送路由决策信息（用于前端解释）
-        if result.routing:
+        # 发送 Round 2 反驳与修正意见
+        for opinion in session.round2_opinions:
             yield {
-                "type": "routing",
-                "roles": [r.value for r in result.routing.roles_needed],
-                "reason": result.routing.reason,
+                "type": "role_opinion",
+                "role": opinion.role.value,
+                "role_label": f"{opinion.role_label}（Round 2）",
+                "content": opinion.content,
+                "round": 2,
+                "evidence": opinion.evidence,
             }
 
-        # 流式发送融合结论（分段发送以模拟流式）
-        synthesis = result.synthesis
-        # 简单分块流式发送
+        # 协作有效性指标（论文核心）
+        if session.round2_opinions:
+            yield {
+                "type": "collaboration_metric",
+                "revision_rate": session.revision_rate,
+                "disagreement_count": session.disagreement_count,
+            }
+
+        # 流式发送最终决策（Round 3 仲裁结果）
+        synthesis = session.final_decision
         chunk_size = 40
         for i in range(0, len(synthesis), chunk_size):
             chunk = synthesis[i:i + chunk_size]
@@ -323,12 +348,16 @@ class AgentManager:
             session_id=session_id,
             experiment_mode=experiment_mode.value,
             query=message,
-            roles_called=[op.role.value for op in result.opinions],
-            routing_reason=result.routing.reason if result.routing else "",
-            role_opinions={op.role.value: op.content for op in result.opinions},
+            roles_called=[op.role.value for op in session.round1_opinions],
+            routing_reason=(
+                session.complexity.reason if session.complexity else ""
+            ),
+            role_opinions={
+                op.role.value: op.content for op in session.round1_opinions
+            },
             final_answer=synthesis,
             guardian_verdict="safe" if experiment_mode.use_guardian else "skipped",
-            latency_ms=result.latency_ms,
+            latency_ms=session.latency_ms,
         )
         experiment_logger.log(log_entry)
 

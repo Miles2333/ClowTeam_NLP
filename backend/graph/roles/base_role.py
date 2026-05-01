@@ -1,4 +1,10 @@
-"""角色智能体基类 —— 每个角色复用同一 LLM，通过不同 system prompt 实现专业化。"""
+"""角色智能体基类 —— 每个角色复用同一 LLM，通过不同 system prompt 实现专业化。
+
+v3.1 升级：
+- 支持多轮辩论（Round 1 独立 / Round 2 反驳 / Round 3 共识）
+- 支持基于他人意见的反驳与修正
+- 支持 LoRA 切换（外科 / 内科可加载训练好的 LoRA）
+"""
 
 from __future__ import annotations
 
@@ -15,32 +21,46 @@ logger = logging.getLogger(__name__)
 
 
 class RoleType(str, Enum):
-    PHYSICIAN = "physician"
-    PHARMACIST = "pharmacist"
-    RADIOLOGIST = "radiologist"
+    """肿瘤多学科会诊（Tumor Board）的 4 个专科。"""
+
+    PATHOLOGIST = "pathologist"
+    SURGEON = "surgeon"
+    MEDICAL_ONCOLOGIST = "medical_oncologist"
+    RADIATION_ONCOLOGIST = "radiation_oncologist"
 
 
 @dataclass
 class RoleOpinion:
-    """单个角色的诊断意见。"""
+    """单个角色的诊断意见。
+
+    在 Round 1 中：仅含 content（独立思考）
+    在 Round 2 中：含 agreements / disagreements / revisions（反驳与修正）
+    """
 
     role: RoleType
-    role_label: str  # 中文角色名，用于前端展示
-    content: str  # 角色回复正文
-    evidence: list[str] = field(default_factory=list)  # 引用的证据来源
+    role_label: str
+    content: str
+    round_num: int = 1  # 当前轮次
+    agreements: list[str] = field(default_factory=list)  # Round 2: 同意的观点
+    disagreements: list[str] = field(default_factory=list)  # Round 2: 反对的观点
+    revisions: list[str] = field(default_factory=list)  # Round 2: 修正的判断
+    evidence: list[str] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 class RoleAgent:
-    """角色智能体基类。
+    """肿瘤 MDT 角色基类。
 
-    每个角色拥有独立的 system prompt，但共享同一个 LLM 实例。
-    通过 system prompt 引导模型以特定专业角色的视角回答问题。
+    每个角色：
+    - Round 1：独立思考给意见
+    - Round 2：看到他人意见后反驳/修正
+    - 共享同一 LLM 实例，通过不同 prompt 区分
+    - 可选挂载 LoRA adapter（仅外科 / 内科）
     """
 
-    role_type: RoleType = RoleType.PHYSICIAN
-    role_label: str = "主治医生"
-    prompt_file: str = "PHYSICIAN.md"
+    role_type: RoleType = RoleType.PATHOLOGIST
+    role_label: str = "病理科医生"
+    prompt_file: str = "PATHOLOGIST.md"
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir
@@ -53,66 +73,179 @@ class RoleAgent:
         return self._system_prompt
 
     def _load_prompt(self) -> str:
-        """从 workspace/roles/ 下加载角色 prompt 文件。"""
         prompt_path = self.base_dir / "workspace" / "roles" / self.prompt_file
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8").strip()
-        logger.warning("Role prompt not found: %s, using default", prompt_path)
-        return f"你是一名{self.role_label}，请从你的专业角度回答用户的医疗问题。"
+        logger.warning("Role prompt not found: %s", prompt_path)
+        return f"你是一名{self.role_label}，请从专业角度回答肿瘤会诊问题。"
 
-    def _build_llm(self):
+    def _build_llm(self, temperature: float = 0.3):
+        # 优先尝试加载 LoRA（如果配置了）
+        try:
+            from eval.inference.load_lora_role import load_lora_role
+            lora_agent = load_lora_role(self.role_type.value)
+            if lora_agent is not None:
+                return lora_agent
+        except ImportError:
+            pass
+
         settings = get_settings()
         llm_config = build_llm_config_from_settings(
-            settings, temperature=0.3, streaming=False
+            settings, temperature=temperature, streaming=False
         )
         return get_llm(llm_config)
 
-    async def aconsult(
+    async def aconsult_round1(
         self,
-        query: str,
-        context: str = "",
+        case: str,
         memory_context: str = "",
     ) -> RoleOpinion:
-        """异步会诊：给定用户问题和上下文，返回该角色的专业意见。
-
-        Args:
-            query: 用户原始问题
-            context: 协调器提供的补充上下文（如其他角色的初步意见）
-            memory_context: 共享记忆检索结果
-        """
+        """Round 1：独立思考，看不到他人意见。"""
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self.system_prompt},
         ]
 
-        # 注入共享记忆
         if memory_context:
             messages.append({
                 "role": "system",
-                "content": f"[共享长期记忆]\n{memory_context}",
+                "content": f"[相关历史病例参考]\n{memory_context}",
             })
 
-        # 注入协调器上下文
-        if context:
-            messages.append({
-                "role": "system",
-                "content": f"[会诊背景信息]\n{context}",
-            })
-
-        messages.append({"role": "user", "content": query})
+        messages.append({
+            "role": "user",
+            "content": (
+                f"【病例】\n{case}\n\n"
+                f"【任务】请你作为{self.role_label}，独立给出 Round 1 意见。"
+                f"按你 prompt 中的 Round 1 输出格式回答。"
+                f"不要参考其他专家意见（你看不到他们）。"
+            ),
+        })
 
         try:
-            llm = self._build_llm()
-            response = await llm.ainvoke(messages)
-            content = self._extract_content(response)
+            llm = self._build_llm(temperature=0.3)
+            content = await self._call_llm(llm, messages)
         except Exception as exc:
-            logger.error("Role %s consultation failed: %s", self.role_type.value, exc)
-            content = f"[{self.role_label}会诊暂时不可用: {exc}]"
+            logger.error("Role %s Round 1 failed: %s", self.role_type.value, exc)
+            content = f"[{self.role_label} Round 1 暂时不可用: {exc}]"
 
         return RoleOpinion(
             role=self.role_type,
             role_label=self.role_label,
             content=content,
+            round_num=1,
         )
+
+    async def aconsult_round2(
+        self,
+        case: str,
+        own_round1: RoleOpinion,
+        others_round1: list[RoleOpinion],
+        memory_context: str = "",
+    ) -> RoleOpinion:
+        """Round 2：看到所有他人意见后，强制给出"同意/反对/修正"。
+
+        这是真协作 Harness 的核心——必须 review 他人意见。
+        """
+        # 构造他人意见的拼接
+        others_text = "\n\n".join(
+            f"【{op.role_label}的 Round 1 意见】\n{op.content}"
+            for op in others_round1
+        )
+
+        round2_instruction = (
+            "现在你已经看到所有其他专家的 Round 1 意见。\n\n"
+            "请严格按以下结构回答（不要省略任何一项）：\n\n"
+            "## 同意（Agreements）\n"
+            "[列出你同意的他人观点 + 简要理由]\n\n"
+            "## 反对（Disagreements）\n"
+            "[列出你不同意的他人观点 + 你的反对依据]\n"
+            "[如果你完全同意没有反对，必须明确写'无明显分歧']\n\n"
+            "## 修正（Revisions）\n"
+            "[基于他人新信息，是否修正你 Round 1 的判断？]\n"
+            "[如果无需修正，写'坚持 Round 1 判断']\n\n"
+            "## Round 2 最终意见\n"
+            "[结合上述思考，给出你的更新版意见]"
+        )
+
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+        ]
+
+        if memory_context:
+            messages.append({
+                "role": "system",
+                "content": f"[相关历史病例参考]\n{memory_context}",
+            })
+
+        messages.append({
+            "role": "user",
+            "content": (
+                f"【病例】\n{case}\n\n"
+                f"【你的 Round 1 意见】\n{own_round1.content}\n\n"
+                f"【其他专家的 Round 1 意见】\n{others_text}\n\n"
+                f"【Round 2 任务】\n{round2_instruction}"
+            ),
+        })
+
+        try:
+            llm = self._build_llm(temperature=0.3)
+            content = await self._call_llm(llm, messages)
+        except Exception as exc:
+            logger.error("Role %s Round 2 failed: %s", self.role_type.value, exc)
+            content = own_round1.content + f"\n\n[Round 2 失败，沿用 Round 1: {exc}]"
+
+        # 简单解析（论文里也可以做更精细的解析）
+        agreements, disagreements, revisions = self._parse_round2(content)
+
+        return RoleOpinion(
+            role=self.role_type,
+            role_label=self.role_label,
+            content=content,
+            round_num=2,
+            agreements=agreements,
+            disagreements=disagreements,
+            revisions=revisions,
+        )
+
+    @staticmethod
+    def _parse_round2(text: str) -> tuple[list[str], list[str], list[str]]:
+        """从 Round 2 输出中解析 同意/反对/修正 部分（用于度量协作有效性）。"""
+        agreements, disagreements, revisions = [], [], []
+        current = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if "同意" in stripped and stripped.startswith(("##", "**")):
+                current = agreements
+                continue
+            if "反对" in stripped and stripped.startswith(("##", "**")):
+                current = disagreements
+                continue
+            if "修正" in stripped and stripped.startswith(("##", "**")):
+                current = revisions
+                continue
+            if "最终意见" in stripped or "Round 2 最终" in stripped:
+                current = None
+                continue
+            if current is not None and stripped:
+                if not stripped.startswith(("#", "**", "[")):
+                    current.append(stripped)
+        return agreements, disagreements, revisions
+
+    async def _call_llm(self, llm: Any, messages: list[dict[str, str]]) -> str:
+        # 如果是 LoRA agent
+        if hasattr(llm, "generate") and not hasattr(llm, "ainvoke"):
+            system_msg = messages[0]["content"]
+            user_msg = messages[-1]["content"]
+            return llm.generate(
+                system_prompt=system_msg,
+                user_text=user_msg,
+                max_new_tokens=1024,
+                temperature=0.3,
+            )
+
+        # 标准 LangChain LLM
+        response = await llm.ainvoke(messages)
+        return self._extract_content(response)
 
     @staticmethod
     def _extract_content(response: Any) -> str:

@@ -1,263 +1,299 @@
-"""协调器模块 —— 接收用户问题，路由到角色智能体，融合输出。
+"""协调器（Coordinator）— v3.1 真协作 Harness 版
 
-协调器是 ClawTeam 多智能体系统的核心枢纽：
-1. 接收用户问题
-2. 通过路由器判断需要调用哪些角色
-3. 并行调用被选中的角色智能体
-4. 融合各角色意见为最终综合结论
+核心机制（参考 MDAgents NeurIPS 2024 + MDTeamGPT 2025）：
+
+1. 复杂度评估 → 简单题单 agent / 中等题独立聚合 / 复杂题多轮辩论
+2. Round 1：4 个角色并行独立思考（看不到他人）
+3. Round 2：每个角色看到他人意见后，强制给出"同意/反对/修正"
+4. Round 3：协调器加权聚合 + 主治仲裁
+
+不是顺序流水线，而是真正的多视角碰撞。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from config import get_settings
+from graph.complexity_assessor import (
+    CaseComplexity,
+    ComplexityDecision,
+    assess_complexity,
+)
 from graph.llm import build_llm_config_from_settings, get_llm
 from graph.roles.base_role import RoleAgent, RoleOpinion, RoleType
-from graph.roles.physician import PhysicianAgent
-from graph.roles.pharmacist import PharmacistAgent
-from graph.roles.radiologist import RadiologistAgent
+from graph.roles.medical_oncologist import MedicalOncologistAgent
+from graph.roles.pathologist import PathologistAgent
+from graph.roles.radiation_oncologist import RadiationOncologistAgent
+from graph.roles.surgeon import SurgeonAgent
 
 logger = logging.getLogger(__name__)
 
-# ── 路由关键词规则（轻量级，后期可替换为训练好的分类器） ──────────────
 
-_PHARMACIST_KEYWORDS = [
-    "药", "用药", "剂量", "服药", "吃药", "药物", "处方", "抗生素",
-    "止痛药", "消炎药", "副作用", "不良反应", "过敏", "禁忌",
-    "相互作用", "DDI", "头孢", "阿莫西林", "布洛芬", "对乙酰氨基酚",
-    "药片", "胶囊", "输液", "注射", "医嘱", "停药", "换药", "减量",
-    "drug", "medication", "dose", "prescription", "antibiotic",
-]
+# ───────────── 角色权重（按问题相关性加权投票）─────────────
 
-_RADIOLOGIST_KEYWORDS = [
-    "CT", "MRI", "X光", "X线", "B超", "超声", "核磁", "造影",
-    "拍片", "影像", "片子", "胸片", "腹部CT", "头颅MRI",
-    "结节", "肿块", "阴影", "钙化", "占位", "肺结节",
-    "BI-RADS", "Lung-RADS", "检查报告", "影像报告",
-    "radiograph", "scan", "imaging", "ultrasound",
-]
+ROLE_RELEVANCE_KEYWORDS = {
+    RoleType.PATHOLOGIST: ["分期", "TNM", "病理", "分化", "标志物", "EGFR", "ALK", "PD-L1"],
+    RoleType.SURGEON: ["手术", "切除", "可切性", "术式", "淋巴清扫", "围手术期"],
+    RoleType.MEDICAL_ONCOLOGIST: ["化疗", "靶向", "免疫", "新辅助", "辅助", "药物", "剂量"],
+    RoleType.RADIATION_ONCOLOGIST: ["放疗", "Gy", "IMRT", "SBRT", "剂量", "靶区", "OAR"],
+}
 
 
-@dataclass
-class RoutingDecision:
-    """路由决策结果。"""
+def compute_role_weights(case: str) -> dict[RoleType, float]:
+    """根据 case 内容动态分配 4 角色权重（用于共识聚合）。"""
+    weights = {}
+    for role, keywords in ROLE_RELEVANCE_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if kw in case)
+        # 基础权重 0.5，每命中关键词 +0.2，最多 1.5
+        weights[role] = min(1.5, 0.5 + hits * 0.2)
+    return weights
 
-    need_physician: bool = True  # 主治医生默认必调
-    need_pharmacist: bool = False
-    need_radiologist: bool = False
-    reason: str = ""
 
-    @property
-    def roles_needed(self) -> list[RoleType]:
-        roles = [RoleType.PHYSICIAN]
-        if self.need_pharmacist:
-            roles.append(RoleType.PHARMACIST)
-        if self.need_radiologist:
-            roles.append(RoleType.RADIOLOGIST)
-        return roles
-
+# ───────────── 数据类 ─────────────
 
 @dataclass
-class CoordinatorResult:
-    """协调器输出结果。"""
+class MDTSession:
+    """一次 MDT 会诊的完整记录（用于评测和论文）。"""
 
-    opinions: list[RoleOpinion] = field(default_factory=list)
-    synthesis: str = ""  # 最终融合结论
-    routing: RoutingDecision | None = None
+    case: str
+    complexity: ComplexityDecision | None = None
+    round1_opinions: list[RoleOpinion] = field(default_factory=list)
+    round2_opinions: list[RoleOpinion] = field(default_factory=list)
+    final_decision: str = ""
+    role_weights: dict[str, float] = field(default_factory=dict)
+    revision_rate: float = 0.0  # Round 2 修正率（论文核心指标）
+    disagreement_count: int = 0
     latency_ms: int = 0
-    total_tokens: int = 0
 
 
-def route_by_keywords(query: str) -> RoutingDecision:
-    """基于关键词的规则路由（MVP 阶段）。
-
-    后期可替换为训练好的分类器模型。
-    """
-    query_lower = query.lower()
-
-    need_pharmacist = any(kw.lower() in query_lower for kw in _PHARMACIST_KEYWORDS)
-    need_radiologist = any(kw.lower() in query_lower for kw in _RADIOLOGIST_KEYWORDS)
-
-    reasons = ["主治医生(默认)"]
-    if need_pharmacist:
-        reasons.append("药师(关键词命中)")
-    if need_radiologist:
-        reasons.append("影像科(关键词命中)")
-
-    return RoutingDecision(
-        need_physician=True,
-        need_pharmacist=need_pharmacist,
-        need_radiologist=need_radiologist,
-        reason=" + ".join(reasons),
-    )
-
-
-async def route_by_llm(query: str) -> RoutingDecision:
-    """基于 LLM 的路由（可选，更准确但增加一次 LLM 调用延迟）。
-
-    输出格式：physician,pharmacist,radiologist（逗号分隔的角色列表）
-    """
-    settings = get_settings()
-    llm_config = build_llm_config_from_settings(settings, temperature=0.0, streaming=False)
-    llm = get_llm(llm_config)
-
-    prompt = (
-        "你是一个医疗问题路由器。根据用户问题判断需要哪些专科医生参与回答。\n"
-        "可选角色：physician（主治医生）、pharmacist（药师）、radiologist（影像科）\n"
-        "规则：\n"
-        "- physician 必须参与\n"
-        "- 涉及用药、剂量、药物相互作用等问题时加入 pharmacist\n"
-        "- 涉及影像检查、CT/MRI/X光/超声等问题时加入 radiologist\n"
-        "只输出角色列表，逗号分隔，不要解释。\n"
-        "示例输出：physician,pharmacist"
-    )
-
-    try:
-        response = await llm.ainvoke([
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": query},
-        ])
-        content = getattr(response, "content", "").strip().lower()
-
-        need_pharmacist = "pharmacist" in content
-        need_radiologist = "radiologist" in content
-
-        return RoutingDecision(
-            need_physician=True,
-            need_pharmacist=need_pharmacist,
-            need_radiologist=need_radiologist,
-            reason=f"LLM路由: {content}",
-        )
-    except Exception as exc:
-        logger.warning("LLM routing failed, falling back to keyword: %s", exc)
-        return route_by_keywords(query)
-
+# ───────────── Coordinator ─────────────
 
 class Coordinator:
-    """多角色协调器。
+    """肿瘤 MDT 协调器 — 真协作 Harness 实现。
 
-    负责：
-    1. 路由决策（决定调用哪些角色）
-    2. 并行调用角色智能体
-    3. 融合多角色意见为最终结论
+    根据复杂度选择不同协作模式：
+    - SIMPLE   → 单 agent (默认 internist 角色，或 LLM 直接回答)
+    - MODERATE → 4 角色 Round 1 独立 + 简单聚合（无辩论）
+    - COMPLEX  → 4 角色 Round 1 + Round 2 辩论 + Round 3 共识仲裁
     """
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir
         self._roles: dict[RoleType, RoleAgent] = {
-            RoleType.PHYSICIAN: PhysicianAgent(base_dir),
-            RoleType.PHARMACIST: PharmacistAgent(base_dir),
-            RoleType.RADIOLOGIST: RadiologistAgent(base_dir),
+            RoleType.PATHOLOGIST: PathologistAgent(base_dir),
+            RoleType.SURGEON: SurgeonAgent(base_dir),
+            RoleType.MEDICAL_ONCOLOGIST: MedicalOncologistAgent(base_dir),
+            RoleType.RADIATION_ONCOLOGIST: RadiationOncologistAgent(base_dir),
         }
 
     async def consult(
         self,
-        query: str,
+        case: str,
         *,
         memory_context: str = "",
-        use_llm_router: bool = False,
-        enabled_roles: list[RoleType] | None = None,
-    ) -> CoordinatorResult:
-        """执行一次多角色会诊。
+        complexity_method: str = "llm",
+        force_complexity: CaseComplexity | None = None,
+        skip_round2: bool = False,  # 消融实验：关闭 Round 2 辩论
+    ) -> MDTSession:
+        """执行一次 MDT 会诊。
 
         Args:
-            query: 用户原始问题
-            memory_context: 共享记忆检索结果
-            use_llm_router: 是否使用 LLM 路由（否则用关键词规则）
-            enabled_roles: 强制指定角色列表（覆盖路由决策，用于实验）
+            case: 病例描述
+            memory_context: 历史病例参考（选做）
+            complexity_method: "llm" / "bert" / "keyword"
+            force_complexity: 实验时强制指定复杂度
+            skip_round2: 消融实验时跳过辩论
         """
-        start_time = time.monotonic()
+        start = time.monotonic()
+        session = MDTSession(case=case)
 
-        # 1. 路由决策
-        if enabled_roles is not None:
-            routing = RoutingDecision(
-                need_physician=RoleType.PHYSICIAN in enabled_roles,
-                need_pharmacist=RoleType.PHARMACIST in enabled_roles,
-                need_radiologist=RoleType.RADIOLOGIST in enabled_roles,
-                reason="手动指定",
+        # ── Step 1: 复杂度评估 ──────────────────────
+        if force_complexity is not None:
+            session.complexity = ComplexityDecision(
+                level=force_complexity,
+                reason="手动指定（实验）",
+                method="manual",
             )
-        elif use_llm_router:
-            routing = await route_by_llm(query)
         else:
-            routing = route_by_keywords(query)
+            session.complexity = await assess_complexity(case, method=complexity_method)
+        logger.info(
+            "Complexity: %s (%s)",
+            session.complexity.level.value,
+            session.complexity.reason,
+        )
 
-        logger.info("Routing decision: %s (reason: %s)", routing.roles_needed, routing.reason)
+        # ── Step 2: 根据复杂度选择策略 ──────────────
+        if session.complexity.level == CaseComplexity.SIMPLE:
+            # 单 agent 路径：用最相关的角色直接答
+            session.final_decision = await self._simple_path(case, memory_context)
+        else:
+            # MDT 路径：4 角色协作
+            session.role_weights = {
+                k.value: v for k, v in compute_role_weights(case).items()
+            }
 
-        # 2. 并行调用角色智能体
-        tasks = []
-        for role_type in routing.roles_needed:
-            agent = self._roles[role_type]
-            tasks.append(agent.aconsult(
-                query=query,
-                memory_context=memory_context,
-            ))
+            # ── Round 1: 并行独立思考 ───────────
+            round1 = await self._run_round1(case, memory_context)
+            session.round1_opinions = round1
 
-        opinions = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 过滤掉异常结果
-        valid_opinions: list[RoleOpinion] = []
-        for opinion in opinions:
-            if isinstance(opinion, Exception):
-                logger.error("Role consultation failed: %s", opinion)
+            if (
+                session.complexity.level == CaseComplexity.MODERATE
+                or skip_round2
+            ):
+                # 中等复杂度或跳过辩论 → 直接聚合 Round 1
+                session.final_decision = await self._aggregate(
+                    case, round1, weights=compute_role_weights(case)
+                )
             else:
-                valid_opinions.append(opinion)
+                # COMPLEX → Round 2 辩论
+                round2 = await self._run_round2(case, round1, memory_context)
+                session.round2_opinions = round2
 
-        # 3. 融合多角色意见
-        synthesis = await self._synthesize(query, valid_opinions)
+                # 计算论文核心指标：修正率
+                session.revision_rate = self._compute_revision_rate(round1, round2)
+                session.disagreement_count = sum(len(op.disagreements) for op in round2)
 
-        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                # ── Round 3: 协调器仲裁 ──────────
+                session.final_decision = await self._arbitrate(
+                    case, round2, weights=compute_role_weights(case)
+                )
 
-        return CoordinatorResult(
-            opinions=valid_opinions,
-            synthesis=synthesis,
-            routing=routing,
-            latency_ms=elapsed_ms,
-        )
+        session.latency_ms = int((time.monotonic() - start) * 1000)
+        return session
 
-    async def _synthesize(
-        self, query: str, opinions: list[RoleOpinion]
+    # ───────────── 内部方法 ─────────────
+
+    async def _simple_path(self, case: str, memory_context: str) -> str:
+        """简单题：用最相关的角色（默认肿瘤内科）直接答。"""
+        agent = self._roles[RoleType.MEDICAL_ONCOLOGIST]
+        opinion = await agent.aconsult_round1(case, memory_context)
+        return opinion.content
+
+    async def _run_round1(
+        self, case: str, memory_context: str
+    ) -> list[RoleOpinion]:
+        """Round 1：4 角色并行独立思考。"""
+        tasks = [
+            agent.aconsult_round1(case, memory_context)
+            for agent in self._roles.values()
+        ]
+        opinions = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = [op for op in opinions if isinstance(op, RoleOpinion)]
+        for op in opinions:
+            if isinstance(op, Exception):
+                logger.error("Round 1 role failed: %s", op)
+        return valid
+
+    async def _run_round2(
+        self,
+        case: str,
+        round1: list[RoleOpinion],
+        memory_context: str,
+    ) -> list[RoleOpinion]:
+        """Round 2：每个角色看完他人意见后，强制给出反驳/修正。
+
+        ⭐ 这是真协作 Harness 的核心。
+        """
+        tasks = []
+        for own in round1:
+            others = [op for op in round1 if op.role != own.role]
+            agent = self._roles.get(own.role)
+            if agent is None:
+                continue
+            tasks.append(
+                agent.aconsult_round2(case, own, others, memory_context)
+            )
+        opinions = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = [op for op in opinions if isinstance(op, RoleOpinion)]
+        for op in opinions:
+            if isinstance(op, Exception):
+                logger.error("Round 2 role failed: %s", op)
+        return valid
+
+    @staticmethod
+    def _compute_revision_rate(
+        round1: list[RoleOpinion], round2: list[RoleOpinion]
+    ) -> float:
+        """计算 Round 2 修正率（论文核心指标）。
+
+        定义：Round 2 中明确给出"修正"内容的角色占比。
+        """
+        if not round2:
+            return 0.0
+        revised = sum(1 for op in round2 if op.revisions and op.revisions[0] != "坚持 Round 1 判断")
+        return revised / len(round2)
+
+    async def _aggregate(
+        self,
+        case: str,
+        opinions: list[RoleOpinion],
+        weights: dict[RoleType, float],
     ) -> str:
-        """融合多角色意见为最终综合结论。"""
+        """中等复杂度的简单聚合（无辩论场景）。"""
+        return await self._build_synthesis(
+            case, opinions, weights, mode="aggregate"
+        )
+
+    async def _arbitrate(
+        self,
+        case: str,
+        opinions: list[RoleOpinion],
+        weights: dict[RoleType, float],
+    ) -> str:
+        """复杂度 COMPLEX 的最终仲裁（主治视角）。"""
+        return await self._build_synthesis(
+            case, opinions, weights, mode="arbitrate"
+        )
+
+    async def _build_synthesis(
+        self,
+        case: str,
+        opinions: list[RoleOpinion],
+        weights: dict[RoleType, float],
+        mode: str,
+    ) -> str:
         if not opinions:
-            return "暂无可用角色意见。"
+            return "暂无可用专家意见。"
 
-        if len(opinions) == 1:
-            # 只有主治医生，直接返回其意见
-            return opinions[0].content
-
-        # 多角色意见需要 LLM 融合
-        settings = get_settings()
-        llm_config = build_llm_config_from_settings(
-            settings, temperature=0.2, streaming=False
-        )
-        llm = get_llm(llm_config)
-
+        # 拼接所有意见 + 权重
         opinion_text = "\n\n".join(
-            f"【{op.role_label}意见】\n{op.content}" for op in opinions
+            f"【{op.role_label}（权重 {weights.get(op.role, 1.0):.1f}）】\n{op.content}"
+            for op in opinions
         )
 
-        synthesis_prompt = (
-            "你是 ClawTeam 多智能体协作诊疗系统的协调器。\n"
-            "请综合以下各专科角色的意见，给出一份完整、连贯的诊疗建议。\n\n"
-            "要求：\n"
-            "1. 整合各角色意见，消除重复，解决矛盾\n"
-            "2. 按照\"综合诊断意见 → 建议检查 → 治疗方向 → 注意事项\"的结构组织\n"
-            "3. 标注各建议的来源角色（如\"主治医生建议...\"、\"药师提醒...\"）\n"
-            "4. 如果角色意见有冲突，优先采纳主治医生意见并注明争议点\n"
-            "5. 末尾必须加上免责声明：\"以上建议仅供参考，具体诊疗请以实际就医为准。\"\n"
+        if mode == "arbitrate":
+            instruction = (
+                "你是 Tumor Board 主任，请综合以下 4 位专家 Round 2 的意见做最终仲裁：\n"
+                "1. 共识区域 → 直接采纳\n"
+                "2. 冲突区域 → 按专家权重投票，权重高者优先\n"
+                "3. 严重分歧 → 给出折中方案，并说明理由\n"
+                "4. 输出综合治疗方案（含手术 / 化疗 / 放疗 / 时间线）\n"
+                "5. 最后注明：以上建议仅供参考，具体诊疗请以实际就医为准"
+            )
+        else:
+            instruction = (
+                "你是 Tumor Board 协调员，请综合以下 4 位专家 Round 1 的独立意见：\n"
+                "1. 整合各专科观点\n"
+                "2. 按权重加权\n"
+                "3. 输出综合治疗方案\n"
+                "4. 末尾加免责声明"
+            )
+
+        settings = get_settings()
+        llm = get_llm(
+            build_llm_config_from_settings(settings, temperature=0.2, streaming=False)
         )
 
         try:
             response = await llm.ainvoke([
-                {"role": "system", "content": synthesis_prompt},
-                {"role": "user", "content": f"用户问题：{query}\n\n{opinion_text}"},
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": f"【病例】\n{case}\n\n{opinion_text}"},
             ])
             content = getattr(response, "content", "")
             if isinstance(content, str):
@@ -265,6 +301,9 @@ class Coordinator:
             return str(content or "").strip()
         except Exception as exc:
             logger.error("Synthesis failed: %s", exc)
-            # 降级：简单拼接
-            parts = [f"**{op.role_label}**：{op.content}" for op in opinions]
-            return "\n\n---\n\n".join(parts) + "\n\n> 以上建议仅供参考，具体诊疗请以实际就医为准。"
+            # 降级：直接拼接
+            parts = [f"**{op.role_label}**：{op.content[:200]}..." for op in opinions]
+            return (
+                "\n\n---\n\n".join(parts)
+                + "\n\n> 以上仅供参考，具体诊疗请以实际就医为准。"
+            )
