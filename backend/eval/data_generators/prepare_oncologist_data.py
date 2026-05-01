@@ -94,13 +94,13 @@ def collect_real_data() -> list[dict]:
 
 
 def to_chatml(record: dict, role_prompt: str) -> dict | None:
-    question = record.get("question", "").strip()
+    question = (record.get("question") or "").strip()
     if not question:
         return None
 
-    options = record.get("options", [])
-    answer = record.get("answer", "").strip()
-    explanation = record.get("explanation", "").strip()
+    options = record.get("options") or []
+    answer = (record.get("answer") or "").strip()
+    explanation = (record.get("explanation") or "").strip()
 
     if isinstance(options, list) and options:
         opt_text = "\n".join(f"{chr(65+i)}. {o}" for i, o in enumerate(options))
