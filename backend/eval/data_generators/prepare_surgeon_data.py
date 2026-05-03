@@ -38,6 +38,7 @@ OUTPUT = TRAINING_DIR / "surgeon_train.jsonl"
 # v3.2: 升级为多视角扩充（每条 seed 生成 3 视角），目标 ~3000 总数据
 TARGET_AUGMENT_COUNT = 2000  # 从 400 升到 2000
 ROLE_PROMPT_PATH = BACKEND_DIR / "workspace" / "roles" / "SURGEON.md"
+TRAINING_SPLITS = ["train", "validation"]
 
 # 多视角扩充：每条 seed 生成 3 个不同视角的对话
 AUGMENT_VIEWS = [
@@ -69,7 +70,7 @@ def collect_real_data() -> list[dict]:
     real_records = []
 
     # MedQA 肿瘤子集
-    for split in ["train", "validation", "test"]:
+    for split in TRAINING_SPLITS:
         path = ONCOLOGY_DIR / f"medqa_{split}_oncology.jsonl"
         if not path.exists():
             continue
@@ -87,7 +88,7 @@ def collect_real_data() -> list[dict]:
                 })
 
     # CMExam 肿瘤子集
-    for split in ["train", "validation", "test"]:
+    for split in TRAINING_SPLITS:
         path = ONCOLOGY_DIR / f"cmexam_{split}_oncology.jsonl"
         if not path.exists():
             continue
@@ -104,7 +105,7 @@ def collect_real_data() -> list[dict]:
                 })
 
     # MedBullets 肿瘤子集（如有）
-    for split in ["train", "validation", "test"]:
+    for split in TRAINING_SPLITS:
         path = ONCOLOGY_DIR / f"medbullets_{split}_oncology.jsonl"
         if not path.exists():
             continue

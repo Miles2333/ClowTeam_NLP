@@ -35,6 +35,7 @@ OUTPUT = TRAINING_DIR / "oncologist_train.jsonl"
 # v3.2: 多视角扩充 + 质量过滤
 TARGET_AUGMENT_COUNT = 2000
 ROLE_PROMPT_PATH = BACKEND_DIR / "workspace" / "roles" / "MEDICAL_ONCOLOGIST.md"
+TRAINING_SPLITS = ["train", "validation"]
 
 AUGMENT_VIEWS = [
     {
@@ -62,7 +63,7 @@ def collect_real_data() -> list[dict]:
     real = []
 
     # MedQA
-    for split in ["train", "validation", "test"]:
+    for split in TRAINING_SPLITS:
         path = ONCOLOGY_DIR / f"medqa_{split}_oncology.jsonl"
         if not path.exists():
             continue
@@ -80,7 +81,7 @@ def collect_real_data() -> list[dict]:
                 })
 
     # CMExam
-    for split in ["train", "validation", "test"]:
+    for split in TRAINING_SPLITS:
         path = ONCOLOGY_DIR / f"cmexam_{split}_oncology.jsonl"
         if not path.exists():
             continue
@@ -97,7 +98,7 @@ def collect_real_data() -> list[dict]:
                 })
 
     # PubMedQA 肿瘤子集（QA 形式，作为补充）
-    for split in ["train", "validation", "test"]:
+    for split in TRAINING_SPLITS:
         path = ONCOLOGY_DIR / f"pubmedqa_{split}_oncology.jsonl"
         if not path.exists():
             continue
