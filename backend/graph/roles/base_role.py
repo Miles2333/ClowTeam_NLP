@@ -9,13 +9,14 @@ v3.1 升级：
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from config import get_settings
-from graph.llm import build_llm_config_from_settings, get_llm
+from graph.llm import ResolvedLLMConfig, build_llm_config_from_settings, get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +95,33 @@ class RoleAgent:
             pass
 
         settings = get_settings()
-        llm_config = build_llm_config_from_settings(
-            settings, temperature=temperature, streaming=False
-        )
+        role_upper = self.role_type.value.upper()
+        role_override_keys = [
+            f"{role_upper}_LLM_PROVIDER",
+            f"{role_upper}_LLM_MODEL",
+            f"{role_upper}_LLM_API_KEY",
+            f"{role_upper}_LLM_BASE_URL",
+        ]
+        has_role_override = any(os.getenv(key) for key in role_override_keys)
+
+        if has_role_override:
+            llm_config = ResolvedLLMConfig(
+                provider=os.getenv(f"{role_upper}_LLM_PROVIDER", settings.llm_provider),
+                model=os.getenv(f"{role_upper}_LLM_MODEL", settings.llm_model),
+                api_key=os.getenv(f"{role_upper}_LLM_API_KEY", settings.llm_api_key),
+                base_url=os.getenv(f"{role_upper}_LLM_BASE_URL", settings.llm_base_url),
+                temperature=temperature,
+                streaming=False,
+            )
+            source_prefix = f"api:role:{self.role_type.value}"
+        else:
+            llm_config = build_llm_config_from_settings(
+                settings, temperature=temperature, streaming=False
+            )
+            source_prefix = "api:global"
+
         llm = get_llm(llm_config)
-        return llm, f"api:{llm.__class__.__name__}"
+        return llm, f"{source_prefix}:{llm.__class__.__name__}"
 
     async def aconsult_round1(
         self,
