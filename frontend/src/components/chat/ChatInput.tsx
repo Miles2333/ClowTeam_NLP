@@ -12,46 +12,44 @@ export function ChatInput({
 }) {
   const [value, setValue] = useState("");
 
+  function submit() {
+    const nextValue = value.trim();
+    if (!nextValue) {
+      return;
+    }
+    void onSend(nextValue);
+    setValue("");
+  }
+
   return (
-    <div className="panel rounded-[28px] p-3">
-      <textarea
-        className="min-h-28 w-full resize-none rounded-[22px] border border-[var(--color-line)] bg-white/70 px-4 py-3 outline-none"
-        onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-            event.preventDefault();
-            const nextValue = value.trim();
-            if (!nextValue) {
-              return;
+    <div className="panel rounded-lg p-2">
+      <div className="flex items-end gap-2">
+        <textarea
+          className="max-h-32 min-h-12 flex-1 resize-y rounded-lg border border-[var(--color-line)] bg-white/82 px-3 py-2 text-sm leading-6 outline-none focus:border-ocean/50 focus:bg-white"
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              submit();
             }
-            void onSend(nextValue);
-            setValue("");
-          }
-        }}
-        placeholder="描述你的症状或医疗疑问，Cmd/Ctrl + Enter 发送"
-        value={value}
-      />
-      <div className="mt-3 flex items-center justify-between">
-        <p className="text-sm text-[var(--color-ink-soft)]">
-          支持多角色会诊、共享记忆检索、安全守卫拦截。
-        </p>
-        <button
-          className="flex items-center gap-2 rounded-full bg-ocean px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:bg-[rgba(15,139,141,0.45)]"
-          disabled={disabled || !value.trim()}
-          onClick={() => {
-            const nextValue = value.trim();
-            if (!nextValue) {
-              return;
-            }
-            void onSend(nextValue);
-            setValue("");
           }}
+          placeholder="输入病例、分期、病理、基因检测和需要讨论的问题。Ctrl / Cmd + Enter 发送。"
+          rows={2}
+          value={value}
+        />
+        <button
+          className="flex h-12 shrink-0 items-center gap-2 rounded-lg bg-ocean px-4 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-ocean/45"
+          disabled={disabled || !value.trim()}
+          onClick={submit}
           type="button"
         >
           <SendHorizonal size={16} />
           发送
         </button>
       </div>
+      <p className="mt-1 px-1 text-[11px] leading-4 text-[var(--color-ink-soft)]">
+        仅供科研和辅助讨论使用，具体诊疗请以临床医生判断为准。
+      </p>
     </div>
   );
 }

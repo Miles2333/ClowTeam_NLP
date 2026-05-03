@@ -15,8 +15,8 @@ const monoFont = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ClawTeam 医疗协作助手",
-  description: "基于多智能体协作的医疗诊疗咨询系统：主治医生 · 临床药师 · 影像科。"
+  title: "ClawTeam MDT 会诊工作台",
+  description: "基于多智能体协作的肿瘤多专科会诊工作台"
 };
 
 export default function RootLayout({

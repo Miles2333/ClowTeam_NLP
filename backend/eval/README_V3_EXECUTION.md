@@ -106,15 +106,15 @@ jupyter lab --no-browser --ip=0.0.0.0 --port=8888
 
 ```env
 USE_LORA_SURGEON=true
-LORA_SURGEON_BASE=Qwen/Qwen3-4B-Instruct
+LORA_SURGEON_BASE=/root/autodl-tmp/Qwen3-4B-Instruct-2507
 LORA_SURGEON_PATH=eval/models/surgeon_qwen3_lora
 
 USE_LORA_MEDICAL_ONCOLOGIST=true
-LORA_MEDICAL_ONCOLOGIST_BASE=Qwen/Qwen3-4B-Instruct
+LORA_MEDICAL_ONCOLOGIST_BASE=/root/autodl-tmp/Qwen3-4B-Instruct-2507
 LORA_MEDICAL_ONCOLOGIST_PATH=eval/models/oncologist_qwen3_lora
 
-# Guardian（已训完）
-USE_TRAINED_GUARDIAN=true
+# Guardian（可选；只有确认 guardian_bert 存在并已接入时再打开）
+USE_TRAINED_GUARDIAN=false
 TRAINED_GUARDIAN_PATH=eval/models/guardian_bert
 ```
 

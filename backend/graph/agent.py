@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,9 @@ import logging
 from config import get_settings, runtime_config
 from graph.context import RequestContext
 from graph.agent_factory import build_agent_config, create_agent_from_config
-from graph.coordinator import Coordinator
+from graph.complexity_assessor import CaseComplexity, assess_complexity
+from graph.coordinator import Coordinator, MDTSession, compute_role_weights
+from graph.roles.base_role import RoleOpinion
 from service.memory_indexer import memory_indexer
 from service.session_manager import SessionManager
 from service.experiment import ExperimentMode, ExperimentLog, experiment_logger
@@ -252,11 +255,15 @@ class AgentManager:
         if self.base_dir is None or self.coordinator is None:
             raise RuntimeError("AgentManager is not initialized")
 
+        yield {"type": "progress", "stage": "case_received", "status": "done", "label": "病例已接收"}
+
         # Guardian 前置检查（仅 MULTI_FULL 模式启用）
         if experiment_mode.use_guardian:
+            yield {"type": "progress", "stage": "guardian", "status": "running", "label": "Guardian 安全检查"}
             from graph.guardian import evaluate_guardian_input
             guardian_result = evaluate_guardian_input(message)
             if guardian_result.is_blocked:
+                yield {"type": "progress", "stage": "guardian", "status": "blocked", "label": "Guardian 已拦截"}
                 yield {
                     "type": "guardian_blocked",
                     "label": guardian_result.label,
@@ -265,11 +272,13 @@ class AgentManager:
                 }
                 yield {"type": "done", "content": guardian_result.block_message}
                 return
+            yield {"type": "progress", "stage": "guardian", "status": "done", "label": "Guardian 通过"}
 
         # 共享记忆检索
         memory_context = ""
         if experiment_mode.use_shared_memory and get_memory_backend() == "v2":
             try:
+                yield {"type": "progress", "stage": "memory", "status": "running", "label": "检索共享记忆"}
                 memory_context = build_memory_context(message) or ""
                 if memory_context:
                     yield {
@@ -277,63 +286,160 @@ class AgentManager:
                         "query": message,
                         "context": memory_context,
                     }
+                yield {"type": "progress", "stage": "memory", "status": "done", "label": "共享记忆检索完成"}
             except Exception as exc:
                 logger.warning("Memory v2 retrieval failed in multi-agent mode: %s", exc)
+                yield {"type": "progress", "stage": "memory", "status": "error", "label": "共享记忆检索失败"}
         elif experiment_mode.use_shared_memory and get_memory_backend() == "v1":
+            yield {"type": "progress", "stage": "memory", "status": "running", "label": "检索长期记忆"}
             retrievals = memory_indexer.retrieve(message, top_k=3)
             if retrievals:
                 yield {"type": "retrieval", "query": message, "results": retrievals}
                 memory_context = self._format_retrieval_context(retrievals)
+            yield {"type": "progress", "stage": "memory", "status": "done", "label": "长期记忆检索完成"}
 
         # 多角色会诊（v3.1 真协作 Harness：Round 1 → Round 2 → Round 3）
-        # 消融实验：根据 experiment_mode 决定是否跳过 Round 2
+        # 消融实验：根据 experiment_mode 决定是否跳过 Round 2。
+        # 这里按阶段显式执行，而不是一次性调用 coordinator.consult()，
+        # 这样前端能看到真实的动态进度。
         skip_round2 = experiment_mode.value in ("multi_no_memory",)  # E2 不走辩论
-        session = await self.coordinator.consult(
-            case=message,
-            memory_context=memory_context,
-            skip_round2=skip_round2,
-        )
+        yield {"type": "progress", "stage": "complexity", "status": "running", "label": "判断病例复杂度"}
+        yield {"type": "progress", "stage": "round1", "status": "pending", "label": "等待专家 Round 1"}
+        if not skip_round2:
+            yield {"type": "progress", "stage": "round2", "status": "pending", "label": "等待专家 Round 2"}
+        yield {"type": "progress", "stage": "synthesis", "status": "pending", "label": "等待综合仲裁"}
 
-        # 发送复杂度评估结果
+        import time
+
+        start = time.monotonic()
+        session = MDTSession(case=message)
+        session.complexity = await assess_complexity(message, method="llm")
+        session.latency_ms = int((time.monotonic() - start) * 1000)
+
+        yield {
+            "type": "progress",
+            "stage": "complexity",
+            "status": "done",
+            "label": f"复杂度: {session.complexity.level.value}",
+        }
+
+        # 发送复杂度评估结果，先让前端路由区域从“判断中”切到完成。
         if session.complexity:
             yield {
                 "type": "routing",  # 沿用前端事件名，意义改为"复杂度判断"
-                "roles": [op.role.value for op in session.round1_opinions],
+                "roles": (
+                    ["medical_oncologist"]
+                    if session.complexity.level == CaseComplexity.SIMPLE
+                    else [role.value for role in self.coordinator._roles.keys()]
+                ),
                 "reason": (
                     f"复杂度: {session.complexity.level.value} | "
                     f"{session.complexity.reason}"
                 ),
             }
 
-        # 发送 Round 1 各角色独立意见
-        for opinion in session.round1_opinions:
-            yield {
-                "type": "role_opinion",
-                "role": opinion.role.value,
-                "role_label": opinion.role_label,
-                "content": opinion.content,
-                "round": 1,
-                "evidence": opinion.evidence,
+        if session.complexity.level == CaseComplexity.SIMPLE:
+            yield {"type": "progress", "stage": "synthesis", "status": "running", "label": "单专科生成结论"}
+            session.final_decision = await self.coordinator._simple_path(message, memory_context)
+        else:
+            session.role_weights = {
+                role.value: weight for role, weight in compute_role_weights(message).items()
             }
 
-        # 发送 Round 2 反驳与修正意见
-        for opinion in session.round2_opinions:
-            yield {
-                "type": "role_opinion",
-                "role": opinion.role.value,
-                "role_label": f"{opinion.role_label}（Round 2）",
-                "content": opinion.content,
-                "round": 2,
-                "evidence": opinion.evidence,
-            }
+            yield {"type": "progress", "stage": "round1", "status": "running", "label": "四个专科并行生成意见"}
+            round1_tasks = [
+                asyncio.create_task(agent.aconsult_round1(message, memory_context))
+                for agent in self.coordinator._roles.values()
+            ]
+            total_round1 = len(round1_tasks)
+            for completed in asyncio.as_completed(round1_tasks):
+                try:
+                    opinion = await completed
+                except Exception as exc:
+                    logger.error("Round 1 role failed: %s", exc)
+                    continue
+                if not isinstance(opinion, RoleOpinion):
+                    continue
+                session.round1_opinions.append(opinion)
+                yield {
+                    "type": "progress",
+                    "stage": "round1",
+                    "status": "running",
+                    "label": f"Round 1 {len(session.round1_opinions)}/{total_round1}",
+                }
+                yield {
+                    "type": "role_opinion",
+                    "role": opinion.role.value,
+                    "role_label": opinion.role_label,
+                    "content": opinion.content,
+                    "round": 1,
+                    "evidence": opinion.evidence,
+                }
+            yield {"type": "progress", "stage": "round1", "status": "done", "label": "Round 1 专家意见完成"}
 
-        # 协作有效性指标（论文核心）
-        if session.round2_opinions:
-            yield {
-                "type": "collaboration_metric",
-                "revision_rate": session.revision_rate,
-                "disagreement_count": session.disagreement_count,
-            }
+            if session.complexity.level == CaseComplexity.MODERATE or skip_round2:
+                yield {"type": "progress", "stage": "synthesis", "status": "running", "label": "聚合 Round 1 意见"}
+                session.final_decision = await self.coordinator._aggregate(
+                    message,
+                    session.round1_opinions,
+                    weights=compute_role_weights(message),
+                )
+            else:
+                yield {"type": "progress", "stage": "round2", "status": "running", "label": "专家正在反驳修正"}
+                round2_tasks = []
+                for own in session.round1_opinions:
+                    agent = self.coordinator._roles.get(own.role)
+                    if agent is None:
+                        continue
+                    others = [op for op in session.round1_opinions if op.role != own.role]
+                    round2_tasks.append(
+                        asyncio.create_task(
+                            agent.aconsult_round2(message, own, others, memory_context)
+                        )
+                    )
+                total_round2 = len(round2_tasks)
+                for completed in asyncio.as_completed(round2_tasks):
+                    try:
+                        opinion = await completed
+                    except Exception as exc:
+                        logger.error("Round 2 role failed: %s", exc)
+                        continue
+                    if not isinstance(opinion, RoleOpinion):
+                        continue
+                    session.round2_opinions.append(opinion)
+                    yield {
+                        "type": "progress",
+                        "stage": "round2",
+                        "status": "running",
+                        "label": f"Round 2 {len(session.round2_opinions)}/{total_round2}",
+                    }
+                    yield {
+                        "type": "role_opinion",
+                        "role": opinion.role.value,
+                        "role_label": f"{opinion.role_label}（Round 2）",
+                        "content": opinion.content,
+                        "round": 2,
+                        "evidence": opinion.evidence,
+                    }
+                session.revision_rate = self.coordinator._compute_revision_rate(
+                    session.round1_opinions,
+                    session.round2_opinions,
+                )
+                session.disagreement_count = sum(len(op.disagreements) for op in session.round2_opinions)
+                yield {"type": "progress", "stage": "round2", "status": "done", "label": "Round 2 反驳修正完成"}
+                yield {
+                    "type": "collaboration_metric",
+                    "revision_rate": session.revision_rate,
+                    "disagreement_count": session.disagreement_count,
+                }
+                yield {"type": "progress", "stage": "synthesis", "status": "running", "label": "正在生成综合结论"}
+                session.final_decision = await self.coordinator._arbitrate(
+                    message,
+                    session.round2_opinions,
+                    weights=compute_role_weights(message),
+                )
+
+        session.latency_ms = int((time.monotonic() - start) * 1000)
 
         # 流式发送最终决策（Round 3 仲裁结果）
         synthesis = session.final_decision
@@ -341,6 +447,7 @@ class AgentManager:
         for i in range(0, len(synthesis), chunk_size):
             chunk = synthesis[i:i + chunk_size]
             yield {"type": "synthesis_token", "content": chunk}
+        yield {"type": "progress", "stage": "synthesis", "status": "done", "label": "综合结论已生成"}
 
         # 实验日志
         session_id = context.thread_id if context else "default"

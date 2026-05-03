@@ -68,7 +68,7 @@ def _build_tongyi_chat(config: ResolvedLLMConfig) -> BaseChatModel:
 
 def _build_deepseek_chat(config: ResolvedLLMConfig) -> BaseChatModel:
     if ChatDeepSeek is None:
-        raise RuntimeError("langchain-deepseek is not installed")
+        return _build_openai_compatible_chat(config)
     _ensure_api_key(config)
     return ChatDeepSeek(
         model=config.model,

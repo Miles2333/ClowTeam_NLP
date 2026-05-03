@@ -14,12 +14,19 @@ export type RoleOpinion = {
   role: string;
   role_label: string;
   content: string;
+  round?: number;
   evidence?: string[];
 };
 
 export type RoutingInfo = {
   roles: string[];
   reason: string;
+};
+
+export type ProgressEvent = {
+  stage: string;
+  status: "pending" | "running" | "done" | "error" | "blocked" | string;
+  label: string;
 };
 
 export type TumorBoardCase = {
@@ -102,7 +109,7 @@ export async function listSessions() {
   return request<SessionSummary[]>("/sessions");
 }
 
-export async function createSession(title = "新会话") {
+export async function createSession(title = "新会诊") {
   return request<SessionSummary>("/sessions", {
     method: "POST",
     body: JSON.stringify({ title })

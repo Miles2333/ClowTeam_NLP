@@ -18,6 +18,7 @@ import {
   setRagMode,
   streamChat,
   type ExperimentMode,
+  type ProgressEvent,
   type Recommendation,
   type RetrievalResult,
   type RoleOpinion,
@@ -35,6 +36,7 @@ type Message = {
   roleOpinions?: RoleOpinion[];
   routing?: RoutingInfo | null;
   guardianBlocked?: { reason: string; message: string } | null;
+  progress?: ProgressEvent[];
 };
 
 type TokenStats = {
@@ -115,7 +117,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sidebarWidth, setSidebarWidth] = useState(308);
   const [inspectorWidth, setInspectorWidth] = useState(360);
   const [tokenStats, setTokenStats] = useState<TokenStats | null>(null);
-  const [experimentMode, setExperimentMode] = useState<ExperimentMode>("single");
+  const [experimentMode, setExperimentMode] = useState<ExperimentMode>("multi_full");
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
 
   const editableFiles = useMemo(
@@ -228,6 +230,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 role: String(data.role ?? ""),
                 role_label: String(data.role_label ?? ""),
                 content: String(data.content ?? ""),
+                round: Number(data.round ?? 1),
                 evidence: (data.evidence as string[]) ?? []
               };
               patchAssistant((message) => ({
@@ -245,6 +248,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   reason: String(data.reason ?? "")
                 }
               }));
+              return;
+            }
+
+            if (event === "progress") {
+              const progress: ProgressEvent = {
+                stage: String(data.stage ?? ""),
+                status: String(data.status ?? ""),
+                label: String(data.label ?? "")
+              };
+              patchAssistant((message) => {
+                const existing = message.progress ?? [];
+                const index = existing.findIndex((item) => item.stage === progress.stage);
+                const next =
+                  index >= 0
+                    ? existing.map((item, idx) => (idx === index ? progress : item))
+                    : [...existing, progress];
+                return { ...message, progress: next };
+              });
               return;
             }
 
@@ -309,15 +330,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
 
             if (event === "new_response") {
-              const nextAssistant: Message = {
-                id: makeId(),
-                role: "assistant",
-                content: "",
-                toolCalls: [],
-                retrievals: []
-              };
-              activeAssistantId = nextAssistant.id;
-              setMessages((prev) => [...prev, nextAssistant]);
+              // Keep tool/result events and the final answer grouped in one assistant card.
+              // The backend emits new_response after tool calls; splitting here creates
+              // many visually noisy tool-only cards.
               return;
             }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageSquare, Plus, Trash2 } from "lucide-react";
+import { MessageSquare, PanelLeftClose, Plus, Trash2 } from "lucide-react";
 
 import { useAppStore } from "@/lib/store";
 
@@ -8,7 +8,7 @@ function preview(text: string) {
   return text.length > 72 ? `${text.slice(0, 72)}...` : text;
 }
 
-export function Sidebar() {
+export function Sidebar({ onCollapse }: { onCollapse?: () => void }) {
   const {
     sessions,
     currentSessionId,
@@ -19,30 +19,43 @@ export function Sidebar() {
   } = useAppStore();
 
   return (
-    <aside className="panel flex h-full flex-col rounded-[30px] p-4">
-      <div className="mb-4 flex items-center justify-between">
+    <aside className="panel flex h-full flex-col rounded-lg p-3">
+      <div className="mb-3 flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-ink-soft)]">
-            Sessions
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--color-ink-soft)]">
+            Cases
           </p>
-          <h2 className="text-lg font-semibold tracking-[-0.04em]">会话与原始消息</h2>
+          <h2 className="text-base font-semibold tracking-0">会诊队列</h2>
         </div>
-        <button
-          className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[rgba(15,139,141,0.12)] text-ocean"
-          onClick={() => void createNewSession()}
-          type="button"
-        >
-          <Plus size={18} />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            className="flex h-9 w-9 items-center justify-center rounded-lg bg-ocean/10 text-ocean hover:bg-ocean/15"
+            onClick={() => void createNewSession()}
+            title="新会诊"
+            type="button"
+          >
+            <Plus size={18} />
+          </button>
+          {onCollapse && (
+            <button
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--color-line)] bg-white/70 text-[var(--color-ink-soft)] hover:bg-white hover:text-ocean"
+              onClick={onCollapse}
+              title="收起会诊队列"
+              type="button"
+            >
+              <PanelLeftClose size={18} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="space-y-2 overflow-y-auto pr-1">
         {sessions.map((session) => (
           <div
-            className={`rounded-3xl border px-4 py-3 transition ${
+            className={`rounded-lg border px-3 py-3 transition ${
               session.id === currentSessionId
-                ? "border-transparent bg-[rgba(15,139,141,0.16)]"
-                : "border-[var(--color-line)] bg-white/45"
+                ? "border-ocean/30 bg-ocean/10"
+                : "border-[var(--color-line)] bg-white/58 hover:bg-white"
             }`}
             key={session.id}
           >
@@ -52,42 +65,42 @@ export function Sidebar() {
               type="button"
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-medium">{session.title}</p>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{session.title}</p>
                   <p className="mt-1 text-xs text-[var(--color-ink-soft)]">
                     {session.message_count} 条消息
                   </p>
                 </div>
-                <MessageSquare className="mt-1 text-[var(--color-ink-soft)]" size={16} />
+                <MessageSquare className="mt-0.5 shrink-0 text-[var(--color-ink-soft)]" size={15} />
               </div>
             </button>
             <button
-              className="mt-3 flex items-center gap-2 text-xs text-[var(--color-ember)]"
+              className="mt-2 flex items-center gap-1.5 text-xs text-ember"
               onClick={() => void removeSession(session.id)}
               type="button"
             >
-              <Trash2 size={14} />
+              <Trash2 size={13} />
               删除
             </button>
           </div>
         ))}
       </div>
 
-      <div className="mt-4 flex min-h-0 flex-1 flex-col rounded-[24px] border border-[var(--color-line)] bg-white/40 p-3">
-        <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-ink-soft)]">
-          Raw Messages
+      <div className="mt-3 flex min-h-0 flex-1 flex-col rounded-lg border border-[var(--color-line)] bg-white/50 p-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--color-ink-soft)]">
+          Timeline
         </p>
-        <div className="mt-3 space-y-3 overflow-y-auto pr-1">
+        <div className="mt-3 space-y-2 overflow-y-auto pr-1">
           {messages.map((message) => (
             <div
-              className="rounded-2xl border border-[var(--color-line)] bg-white/60 px-3 py-2"
+              className="rounded-lg border border-[var(--color-line)] bg-white/78 px-3 py-2"
               key={message.id}
             >
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-[0.2em] text-[var(--color-ink-soft)]">
-                <span>{message.role}</span>
-                <span>{message.toolCalls.length} tools</span>
+              <div className="mb-1 flex items-center justify-between text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--color-ink-soft)]">
+                <span>{message.role === "user" ? "case" : "mdt"}</span>
+                <span>{message.roleOpinions?.length ?? 0} roles</span>
               </div>
-              <p className="text-sm text-[var(--color-ink-soft)]">{preview(message.content)}</p>
+              <p className="text-xs leading-5 text-[var(--color-ink-soft)]">{preview(message.content)}</p>
             </div>
           ))}
         </div>
