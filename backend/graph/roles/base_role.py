@@ -80,12 +80,16 @@ class RoleAgent:
         return f"你是一名{self.role_label}，请从专业角度回答肿瘤会诊问题。"
 
     def _build_llm(self, temperature: float = 0.3):
+        llm, _source = self._build_llm_with_source(temperature)
+        return llm
+
+    def _build_llm_with_source(self, temperature: float = 0.3) -> tuple[Any, str]:
         # 优先尝试加载 LoRA（如果配置了）
         try:
             from eval.inference.load_lora_role import load_lora_role
             lora_agent = load_lora_role(self.role_type.value)
             if lora_agent is not None:
-                return lora_agent
+                return lora_agent, "lora"
         except ImportError:
             pass
 
@@ -93,7 +97,8 @@ class RoleAgent:
         llm_config = build_llm_config_from_settings(
             settings, temperature=temperature, streaming=False
         )
-        return get_llm(llm_config)
+        llm = get_llm(llm_config)
+        return llm, f"api:{llm.__class__.__name__}"
 
     async def aconsult_round1(
         self,
@@ -121,10 +126,13 @@ class RoleAgent:
             ),
         })
 
+        source = "unknown"
+        status = "ok"
         try:
-            llm = self._build_llm(temperature=0.3)
+            llm, source = self._build_llm_with_source(temperature=0.3)
             content = await self._call_llm(llm, messages)
         except Exception as exc:
+            status = "failed"
             logger.error("Role %s Round 1 failed: %s", self.role_type.value, exc)
             content = f"[{self.role_label} Round 1 暂时不可用: {exc}]"
 
@@ -133,6 +141,13 @@ class RoleAgent:
             role_label=self.role_label,
             content=content,
             round_num=1,
+            tool_calls=[{
+                "type": "model_call",
+                "role": self.role_type.value,
+                "round": 1,
+                "backend": source,
+                "status": status,
+            }],
         )
 
     async def aconsult_round2(
@@ -187,10 +202,13 @@ class RoleAgent:
             ),
         })
 
+        source = "unknown"
+        status = "ok"
         try:
-            llm = self._build_llm(temperature=0.3)
+            llm, source = self._build_llm_with_source(temperature=0.3)
             content = await self._call_llm(llm, messages)
         except Exception as exc:
+            status = "failed"
             logger.error("Role %s Round 2 failed: %s", self.role_type.value, exc)
             content = own_round1.content + f"\n\n[Round 2 失败，沿用 Round 1: {exc}]"
 
@@ -205,6 +223,13 @@ class RoleAgent:
             agreements=agreements,
             disagreements=disagreements,
             revisions=revisions,
+            tool_calls=[{
+                "type": "model_call",
+                "role": self.role_type.value,
+                "round": 2,
+                "backend": source,
+                "status": status,
+            }],
         )
 
     @staticmethod
