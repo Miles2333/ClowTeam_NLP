@@ -18,6 +18,7 @@ class PathologistAgent(RoleAgent):
     role_type = RoleType.PATHOLOGIST
     role_label = "病理科医生"
     prompt_file = "PATHOLOGIST.md"
+    TEXT_ONLY_PREFIX = "未收到病理图像，仅基于文本病理报告/病例信息判断。"
 
     def _image_attachments(
         self, attachments: list[dict[str, Any]] | None
@@ -100,6 +101,23 @@ class PathologistAgent(RoleAgent):
             "is unavailable."
         )
 
+    @classmethod
+    def _ensure_text_only_prefix(cls, content: str) -> str:
+        text = str(content or "").strip()
+        variants = (
+            cls.TEXT_ONLY_PREFIX,
+            "未收到病理图像，仅基于文本判断。",
+            "未收到病理图像，仅基于文本病理报告判断。",
+            "未收到图片，仅基于文本病理报告/病例信息判断。",
+        )
+        for phrase in variants:
+            if text.startswith(phrase):
+                return text
+            text = text.replace(phrase, "").strip()
+        if not text:
+            return cls.TEXT_ONLY_PREFIX
+        return f"{cls.TEXT_ONLY_PREFIX}\n\n{text}"
+
     @staticmethod
     def _image_user_blocks(prompt: str, images: list[dict[str, str]]) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -140,6 +158,7 @@ class PathologistAgent(RoleAgent):
                 memory_context,
                 attachments=attachments,
             )
+            opinion.content = self._ensure_text_only_prefix(opinion.content)
             opinion.tool_calls.append(
                 {
                     "type": "attachment_status",
@@ -261,6 +280,8 @@ class PathologistAgent(RoleAgent):
                 memory_context,
                 attachments=attachments,
             )
+            if not images:
+                opinion.content = self._ensure_text_only_prefix(opinion.content)
             opinion.tool_calls.append(
                 {
                     "type": "attachment_status",
