@@ -41,18 +41,33 @@ def to_unified_format(item: dict) -> dict:
     """统一格式：question / options / answer / explanation"""
     # MedQA-USMLE-4-options 字段
     question = item.get("question") or item.get("Question") or ""
-    options = item.get("options") or item.get("opa")  # 兼容多种格式
+    options = item.get("options")  # 兼容多种格式
     if isinstance(options, dict):
-        # opa/opb/opc/opd 格式
-        opt_list = [item.get(f"op{c}", "") for c in "abcd"]
+        if all(key in options for key in ["A", "B", "C", "D"]):
+            opt_list = [options[key] for key in ["A", "B", "C", "D"]]
+        elif all(key in options for key in ["opa", "opb", "opc", "opd"]):
+            opt_list = [options[key] for key in ["opa", "opb", "opc", "opd"]]
+        elif "value" in options and isinstance(options["value"], list):
+            opt_list = options["value"]
+        else:
+            opt_list = [value for _, value in sorted(options.items())]
     elif isinstance(options, list):
         opt_list = options
     else:
-        opt_list = []
+        opt_list = [item.get(f"op{c}", "") for c in "abcd"]
+    opt_list = [str(option).strip() for option in opt_list if str(option).strip()]
 
-    answer_idx = item.get("answer_idx") or item.get("answer") or item.get("cop", 0)
-    if isinstance(answer_idx, str) and answer_idx in "ABCD":
-        answer_idx = "ABCD".index(answer_idx)
+    answer_idx = item.get("answer_idx")
+    if answer_idx in (None, ""):
+        answer_idx = item.get("answer")
+    if answer_idx in (None, ""):
+        answer_idx = item.get("cop", 0)
+    if isinstance(answer_idx, str):
+        answer_idx = answer_idx.strip()
+        if answer_idx.upper() in "ABCD":
+            answer_idx = "ABCD".index(answer_idx.upper())
+        elif answer_idx.isdigit():
+            answer_idx = int(answer_idx)
 
     return {
         "question": question,
