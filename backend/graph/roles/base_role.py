@@ -127,6 +127,7 @@ class RoleAgent:
         self,
         case: str,
         memory_context: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> RoleOpinion:
         """Round 1：独立思考，看不到他人意见。"""
         messages: list[dict[str, str]] = [
@@ -179,6 +180,7 @@ class RoleAgent:
         own_round1: RoleOpinion,
         others_round1: list[RoleOpinion],
         memory_context: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> RoleOpinion:
         """Round 2：看到所有他人意见后，强制给出"同意/反对/修正"。
 

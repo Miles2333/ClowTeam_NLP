@@ -4,6 +4,14 @@ export type ToolCall = {
   output: string;
 };
 
+export type ChatAttachment = {
+  type: "image";
+  name: string;
+  content_type: string;
+  url: string;
+  size?: number;
+};
+
 export type RetrievalResult = {
   text: string;
   score: number;
@@ -185,6 +193,7 @@ export async function streamChat(
     message: string;
     session_id: string;
     experiment_mode?: ExperimentMode;
+    attachments?: ChatAttachment[];
   },
   handlers: StreamHandlers
 ) {

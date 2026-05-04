@@ -7,7 +7,14 @@ import { CheckCircle2, ClipboardList, FileSearch, GitBranch, Loader2, Route, Shi
 import { RetrievalCard } from "@/components/chat/RetrievalCard";
 import { RoleOpinionCard } from "@/components/chat/RoleOpinionCard";
 import { ThoughtChain } from "@/components/chat/ThoughtChain";
-import type { ProgressEvent, RetrievalResult, RoleOpinion, RoutingInfo, ToolCall } from "@/lib/api";
+import type {
+  ChatAttachment,
+  ProgressEvent,
+  RetrievalResult,
+  RoleOpinion,
+  RoutingInfo,
+  ToolCall
+} from "@/lib/api";
 
 function roleCountLabel(routing?: RoutingInfo | null) {
   if (!routing || !routing.roles.length) {
@@ -131,7 +138,8 @@ export function ChatMessage({
   roleOpinions,
   routing,
   guardianBlocked,
-  progress
+  progress,
+  attachments = []
 }: {
   role: "user" | "assistant";
   content: string;
@@ -141,13 +149,14 @@ export function ChatMessage({
   routing?: RoutingInfo | null;
   guardianBlocked?: { reason: string; message: string } | null;
   progress?: ProgressEvent[];
+  attachments?: ChatAttachment[];
 }) {
   const isUser = role === "user";
   const hasRoleOpinions = !!(roleOpinions && roleOpinions.length > 0);
   const hasProgress = !!(progress && progress.length > 0);
   const round1Opinions = roleOpinions?.filter((opinion) => (opinion.round ?? 1) === 1) ?? [];
   const round2Opinions = roleOpinions?.filter((opinion) => opinion.round === 2) ?? [];
-  const hasFinal = content && content.trim() !== "";
+  const hasFinal = content.trim() !== "";
   const hasActivity = toolCalls.length > 0 || retrievals.length > 0 || !!guardianBlocked;
   const hasToolContext = toolCalls.length > 0 || retrievals.length > 0;
   const hasMdtWorkflow = hasProgress || !!routing || hasRoleOpinions || !!guardianBlocked;
@@ -202,6 +211,19 @@ export function ChatMessage({
       <article className="ml-auto max-w-[82%] rounded-lg bg-[var(--color-ink)] px-4 py-3 text-white shadow-sm">
         <div className="mb-1 text-xs font-medium text-white/60">病例输入</div>
         <div className="whitespace-pre-wrap leading-7">{content}</div>
+        {attachments.length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-2 border-t border-white/10 pt-2">
+            {attachments.map((attachment, index) => (
+              <span
+                className="inline-flex max-w-[220px] items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-white/80"
+                key={`${attachment.name}-${index}`}
+              >
+                <FileSearch size={13} />
+                <span className="truncate">{attachment.name}</span>
+              </span>
+            ))}
+          </div>
+        ) : null}
       </article>
     );
   }

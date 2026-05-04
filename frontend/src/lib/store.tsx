@@ -17,6 +17,7 @@ import {
   saveFile,
   setRagMode,
   streamChat,
+  type ChatAttachment,
   type ExperimentMode,
   type ProgressEvent,
   type Recommendation,
@@ -37,6 +38,7 @@ type Message = {
   routing?: RoutingInfo | null;
   guardianBlocked?: { reason: string; message: string } | null;
   progress?: ProgressEvent[];
+  attachments?: ChatAttachment[];
 };
 
 type TokenStats = {
@@ -65,7 +67,7 @@ type AppStore = {
   refreshRecommendations: () => Promise<void>;
   createNewSession: () => Promise<void>;
   selectSession: (sessionId: string) => Promise<void>;
-  sendMessage: (value: string) => Promise<void>;
+  sendMessage: (value: string, attachments?: ChatAttachment[]) => Promise<void>;
   toggleRagMode: () => Promise<void>;
   renameCurrentSession: (title: string) => Promise<void>;
   removeSession: (sessionId: string) => Promise<void>;
@@ -166,8 +168,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return created.id;
   }
 
-  async function sendMessage(value: string) {
-    if (!value.trim() || isStreaming) {
+  async function sendMessage(value: string, attachments: ChatAttachment[] = []) {
+    const nextValue =
+      value.trim() || (attachments.length ? "请结合上传的病理图像进行 MDT 会诊。" : "");
+    if (!nextValue || isStreaming) {
       return;
     }
 
@@ -175,9 +179,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const userMessage: Message = {
       id: makeId(),
       role: "user",
-      content: value.trim(),
+      content: nextValue,
       toolCalls: [],
-      retrievals: []
+      retrievals: [],
+      attachments: attachments.length ? attachments : undefined
     };
     const assistantMessage: Message = {
       id: makeId(),
@@ -200,7 +205,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     try {
       await streamChat(
-        { message: value.trim(), session_id: sessionId, experiment_mode: experimentMode },
+        {
+          message: nextValue,
+          session_id: sessionId,
+          experiment_mode: experimentMode,
+          attachments
+        },
         {
           onEvent(event, data) {
             if (event === "retrieval") {

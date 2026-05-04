@@ -100,6 +100,7 @@ class Coordinator:
         complexity_method: str = "llm",
         force_complexity: CaseComplexity | None = None,
         skip_round2: bool = False,  # 消融实验：关闭 Round 2 辩论
+        attachments: list[dict[str, Any]] | None = None,
     ) -> MDTSession:
         """执行一次 MDT 会诊。
 
@@ -131,7 +132,7 @@ class Coordinator:
         # ── Step 2: 根据复杂度选择策略 ──────────────
         if session.complexity.level == CaseComplexity.SIMPLE:
             # 单 agent 路径：用最相关的角色直接答
-            session.final_decision = await self._simple_path(case, memory_context)
+            session.final_decision = await self._simple_path(case, memory_context, attachments)
         else:
             # MDT 路径：4 角色协作
             session.role_weights = {
@@ -139,7 +140,7 @@ class Coordinator:
             }
 
             # ── Round 1: 并行独立思考 ───────────
-            round1 = await self._run_round1(case, memory_context)
+            round1 = await self._run_round1(case, memory_context, attachments)
             session.round1_opinions = round1
 
             if skip_round2:
@@ -149,7 +150,7 @@ class Coordinator:
                 )
             else:
                 # 完整 MDT：所有非 simple 病例进入 Round 2 辩论
-                round2 = await self._run_round2(case, round1, memory_context)
+                round2 = await self._run_round2(case, round1, memory_context, attachments)
                 session.round2_opinions = round2
 
                 # 计算论文核心指标：修正率
@@ -166,18 +167,26 @@ class Coordinator:
 
     # ───────────── 内部方法 ─────────────
 
-    async def _simple_path(self, case: str, memory_context: str) -> str:
+    async def _simple_path(
+        self,
+        case: str,
+        memory_context: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> str:
         """简单题：用最相关的角色（默认肿瘤内科）直接答。"""
         agent = self._roles[RoleType.MEDICAL_ONCOLOGIST]
-        opinion = await agent.aconsult_round1(case, memory_context)
+        opinion = await agent.aconsult_round1(case, memory_context, attachments=attachments)
         return opinion.content
 
     async def _run_round1(
-        self, case: str, memory_context: str
+        self,
+        case: str,
+        memory_context: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> list[RoleOpinion]:
         """Round 1：4 角色并行独立思考。"""
         tasks = [
-            agent.aconsult_round1(case, memory_context)
+            agent.aconsult_round1(case, memory_context, attachments=attachments)
             for agent in self._roles.values()
         ]
         opinions = await asyncio.gather(*tasks, return_exceptions=True)
@@ -192,6 +201,7 @@ class Coordinator:
         case: str,
         round1: list[RoleOpinion],
         memory_context: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> list[RoleOpinion]:
         """Round 2：每个角色看完他人意见后，强制给出反驳/修正。
 
@@ -204,7 +214,9 @@ class Coordinator:
             if agent is None:
                 continue
             tasks.append(
-                agent.aconsult_round2(case, own, others, memory_context)
+                agent.aconsult_round2(
+                    case, own, others, memory_context, attachments=attachments
+                )
             )
         opinions = await asyncio.gather(*tasks, return_exceptions=True)
         valid = [op for op in opinions if isinstance(op, RoleOpinion)]

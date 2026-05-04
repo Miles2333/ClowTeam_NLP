@@ -29,6 +29,10 @@ class ChatRequest(BaseModel):
         default="single",
         description="实验模式: single | multi_no_memory | multi_memory | multi_full",
     )
+    attachments: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Optional image attachments for multimodal specialist agents.",
+    )
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -77,6 +81,7 @@ async def chat(payload: ChatRequest):
                 history_for_agent,
                 context=request_context,
                 experiment_mode=experiment_mode,
+                attachments=payload.attachments,
             )
         return agent_manager.astream(
             payload.message, history_for_agent, context=request_context

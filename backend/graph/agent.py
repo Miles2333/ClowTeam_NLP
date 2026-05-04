@@ -243,6 +243,7 @@ class AgentManager:
         history: list[dict[str, Any]],
         context: RequestContext | None = None,
         experiment_mode: ExperimentMode = ExperimentMode.MULTI_FULL,
+        attachments: list[dict[str, Any]] | None = None,
     ):
         """多 Agent 模式流式输出（ClawTeam 协作诊疗）。
 
@@ -343,7 +344,9 @@ class AgentManager:
             if not skip_round2:
                 yield {"type": "progress", "stage": "round2", "status": "blocked", "label": "简单病例跳过 Round 2"}
             yield {"type": "progress", "stage": "synthesis", "status": "running", "label": "单专科生成结论"}
-            session.final_decision = await self.coordinator._simple_path(message, memory_context)
+            session.final_decision = await self.coordinator._simple_path(
+                message, memory_context, attachments
+            )
         else:
             session.role_weights = {
                 role.value: weight for role, weight in compute_role_weights(message).items()
@@ -351,7 +354,11 @@ class AgentManager:
 
             yield {"type": "progress", "stage": "round1", "status": "running", "label": "四个专科并行生成意见"}
             round1_tasks = [
-                asyncio.create_task(agent.aconsult_round1(message, memory_context))
+                asyncio.create_task(
+                    agent.aconsult_round1(
+                        message, memory_context, attachments=attachments
+                    )
+                )
                 for agent in self.coordinator._roles.values()
             ]
             total_round1 = len(round1_tasks)
@@ -397,7 +404,13 @@ class AgentManager:
                     others = [op for op in session.round1_opinions if op.role != own.role]
                     round2_tasks.append(
                         asyncio.create_task(
-                            agent.aconsult_round2(message, own, others, memory_context)
+                            agent.aconsult_round2(
+                                message,
+                                own,
+                                others,
+                                memory_context,
+                                attachments=attachments,
+                            )
                         )
                     )
                 total_round2 = len(round2_tasks)

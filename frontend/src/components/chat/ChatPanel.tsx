@@ -100,6 +100,7 @@ export function ChatPanel() {
               routing={message.routing}
               guardianBlocked={message.guardianBlocked}
               progress={message.progress}
+              attachments={message.attachments}
             />
           ))}
           <div ref={endRef} />
