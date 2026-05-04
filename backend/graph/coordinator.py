@@ -79,7 +79,7 @@ class Coordinator:
 
     根据复杂度选择不同协作模式：
     - SIMPLE   → 单 agent (默认 internist 角色，或 LLM 直接回答)
-    - MODERATE → 4 角色 Round 1 独立 + 简单聚合（无辩论）
+    - MODERATE → 4 角色 Round 1；完整模式继续 Round 2，消融时可跳过
     - COMPLEX  → 4 角色 Round 1 + Round 2 辩论 + Round 3 共识仲裁
     """
 
@@ -142,16 +142,13 @@ class Coordinator:
             round1 = await self._run_round1(case, memory_context)
             session.round1_opinions = round1
 
-            if (
-                session.complexity.level == CaseComplexity.MODERATE
-                or skip_round2
-            ):
-                # 中等复杂度或跳过辩论 → 直接聚合 Round 1
+            if skip_round2:
+                # 消融实验 E2：直接聚合 Round 1，不跑辩论
                 session.final_decision = await self._aggregate(
                     case, round1, weights=compute_role_weights(case)
                 )
             else:
-                # COMPLEX → Round 2 辩论
+                # 完整 MDT：所有非 simple 病例进入 Round 2 辩论
                 round2 = await self._run_round2(case, round1, memory_context)
                 session.round2_opinions = round2
 

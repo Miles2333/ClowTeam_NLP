@@ -339,6 +339,9 @@ class AgentManager:
             }
 
         if session.complexity.level == CaseComplexity.SIMPLE:
+            yield {"type": "progress", "stage": "round1", "status": "blocked", "label": "简单病例跳过多专家"}
+            if not skip_round2:
+                yield {"type": "progress", "stage": "round2", "status": "blocked", "label": "简单病例跳过 Round 2"}
             yield {"type": "progress", "stage": "synthesis", "status": "running", "label": "单专科生成结论"}
             session.final_decision = await self.coordinator._simple_path(message, memory_context)
         else:
@@ -377,7 +380,7 @@ class AgentManager:
                 }
             yield {"type": "progress", "stage": "round1", "status": "done", "label": "Round 1 专家意见完成"}
 
-            if session.complexity.level == CaseComplexity.MODERATE or skip_round2:
+            if skip_round2:
                 yield {"type": "progress", "stage": "synthesis", "status": "running", "label": "聚合 Round 1 意见"}
                 session.final_decision = await self.coordinator._aggregate(
                     message,
