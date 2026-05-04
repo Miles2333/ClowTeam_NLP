@@ -40,19 +40,106 @@ logger = logging.getLogger(__name__)
 ROLE_RELEVANCE_KEYWORDS = {
     RoleType.PATHOLOGIST: ["分期", "TNM", "病理", "分化", "标志物", "EGFR", "ALK", "PD-L1"],
     RoleType.SURGEON: ["手术", "切除", "可切性", "术式", "淋巴清扫", "围手术期"],
-    RoleType.MEDICAL_ONCOLOGIST: ["化疗", "靶向", "免疫", "新辅助", "辅助", "药物", "剂量"],
+    RoleType.MEDICAL_ONCOLOGIST: ["化疗", "靶向", "免疫治疗", "新辅助", "辅助", "药物", "用药"],
     RoleType.RADIATION_ONCOLOGIST: ["放疗", "Gy", "IMRT", "SBRT", "剂量", "靶区", "OAR"],
 }
 
 
+DECISION_DOMAIN_KEYWORDS = {
+    "diagnosis": [
+        "病理", "组织学", "分型", "分化", "免疫组化", "IHC", "TNM", "分期",
+        "EGFR", "ALK", "ROS1", "PD-L1", "HER2", "KRAS", "BRCA", "标志物",
+        "分子", "突变", "pCR", "MPR",
+    ],
+    "surgery": [
+        "手术", "切除", "可切除", "可切性", "术式", "淋巴结清扫", "淋巴清扫",
+        "围手术期", "R0", "肺叶切除", "袖式", "边缘可切除",
+    ],
+    "systemic": [
+        "靶向", "化疗", "免疫治疗", "PD-1", "检查点", "TKI", "奥希替尼",
+        "新辅助", "辅助", "药物", "用药", "周期", "维持", "耐药", "复发风险",
+    ],
+    "radiation": [
+        "放疗", "PORT", "SBRT", "IMRT", "VMAT", "Gy", "剂量", "分割",
+        "靶区", "OAR", "同步放化疗", "序贯",
+    ],
+    "treatment_path": [
+        "治疗路径", "治疗方案", "时间线", "MDT", "会诊", "先手术",
+        "先治疗", "再手术", "术前", "术后", "手术还是", "直接手术",
+        "新辅助", "降期", "根治性", "综合治疗",
+    ],
+}
+
+
+DOMAIN_ROLE_BONUS = {
+    "diagnosis": {
+        RoleType.PATHOLOGIST: 0.45,
+        RoleType.MEDICAL_ONCOLOGIST: 0.15,
+    },
+    "surgery": {
+        RoleType.SURGEON: 0.45,
+        RoleType.MEDICAL_ONCOLOGIST: 0.15,
+        RoleType.RADIATION_ONCOLOGIST: 0.10,
+    },
+    "systemic": {
+        RoleType.MEDICAL_ONCOLOGIST: 0.45,
+        RoleType.SURGEON: 0.15,
+        RoleType.PATHOLOGIST: 0.10,
+    },
+    "radiation": {
+        RoleType.RADIATION_ONCOLOGIST: 0.45,
+        RoleType.MEDICAL_ONCOLOGIST: 0.15,
+        RoleType.SURGEON: 0.10,
+    },
+    "treatment_path": {
+        RoleType.SURGEON: 0.30,
+        RoleType.MEDICAL_ONCOLOGIST: 0.30,
+        RoleType.RADIATION_ONCOLOGIST: 0.15,
+        RoleType.PATHOLOGIST: 0.10,
+    },
+}
+
+
+def _count_domain_hits(case_text: str, keywords: list[str]) -> int:
+    return sum(1 for keyword in keywords if keyword.lower() in case_text)
+
+
+def _active_decision_domains(case_text: str) -> set[str]:
+    return {
+        domain
+        for domain, keywords in DECISION_DOMAIN_KEYWORDS.items()
+        if _count_domain_hits(case_text, keywords) > 0
+    }
+
+
 def compute_role_weights(case: str) -> dict[RoleType, float]:
-    """根据 case 内容动态分配 4 角色权重（用于共识聚合）。"""
-    weights = {}
+    """根据病例中的决策域动态分配 4 个角色权重（用于共识聚合）。"""
+    case_text = case.lower()
+    weights = {role: 0.6 for role in RoleType}
+
     for role, keywords in ROLE_RELEVANCE_KEYWORDS.items():
-        hits = sum(1 for kw in keywords if kw in case)
-        # 基础权重 0.5，每命中关键词 +0.2，最多 1.5
-        weights[role] = min(1.5, 0.5 + hits * 0.2)
-    return weights
+        hits = _count_domain_hits(case_text, keywords)
+        weights[role] += min(0.20, hits * 0.05)
+
+    domains = _active_decision_domains(case_text)
+    for domain in domains:
+        for role, bonus in DOMAIN_ROLE_BONUS[domain].items():
+            weights[role] += bonus
+
+    # 综合治疗路径问题应由治疗主责科室牵头；病理提供诊断/分型约束。
+    if "treatment_path" in domains:
+        weights[RoleType.SURGEON] = max(weights[RoleType.SURGEON], 1.05)
+        weights[RoleType.MEDICAL_ONCOLOGIST] = max(
+            weights[RoleType.MEDICAL_ONCOLOGIST],
+            1.05,
+        )
+        if "diagnosis" in domains:
+            weights[RoleType.PATHOLOGIST] = min(weights[RoleType.PATHOLOGIST], 1.00)
+
+    return {
+        role: round(max(0.5, min(1.5, weight)), 2)
+        for role, weight in weights.items()
+    }
 
 
 # ───────────── 数据类 ─────────────
