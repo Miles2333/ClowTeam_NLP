@@ -87,10 +87,13 @@ class RoleAgent:
     def _build_llm_with_source(self, temperature: float = 0.3) -> tuple[Any, str]:
         # 优先尝试加载 LoRA（如果配置了）
         try:
-            from eval.inference.load_lora_role import load_lora_role
+            from eval.inference.load_lora_role import load_local_base_role, load_lora_role
             lora_agent = load_lora_role(self.role_type.value)
             if lora_agent is not None:
                 return lora_agent, "lora"
+            local_base_agent = load_local_base_role(self.role_type.value)
+            if local_base_agent is not None:
+                return local_base_agent, "local_base"
         except ImportError:
             pass
 

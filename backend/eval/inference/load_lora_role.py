@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # 全局缓存：(role_type) -> LoraRoleAgent
 _lora_cache: dict[str, "LoraRoleAgent"] = {}
+_local_base_cache: dict[str, "LoraRoleAgent"] = {}
 
 
 class LoraRoleAgent:
@@ -37,7 +38,7 @@ class LoraRoleAgent:
         self,
         role: str,
         base_model: str,
-        adapter_path: Path,
+        adapter_path: Path | None,
         is_multimodal: bool = False,
     ) -> None:
         import torch
@@ -74,8 +75,11 @@ class LoraRoleAgent:
             self.processor = None
 
         # 加载 LoRA adapter
-        from peft import PeftModel
-        self.model = PeftModel.from_pretrained(base, str(adapter_path))
+        if adapter_path is not None:
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(base, str(adapter_path))
+        else:
+            self.model = base
         self.model.eval()
 
         logger.info(
@@ -204,4 +208,44 @@ def load_lora_role(role: str) -> LoraRoleAgent | None:
         return agent
     except Exception as exc:
         logger.error("Failed to load LoRA for role=%s: %s", role, exc)
+        return None
+
+
+def load_local_base_role(role: str) -> LoraRoleAgent | None:
+    """Load a local base model for a role without attaching a LoRA adapter.
+
+    This supports strict LoRA ablations:
+    local Qwen base experts vs the same local Qwen base plus LoRA.
+    """
+    global _local_base_cache
+
+    role_upper = role.upper()
+    if os.getenv(f"USE_LOCAL_BASE_{role_upper}", "false").lower() not in ("1", "true", "yes"):
+        return None
+
+    base_model = (
+        os.getenv(f"LOCAL_BASE_{role_upper}_MODEL")
+        or os.getenv(f"LORA_{role_upper}_BASE")
+        or ""
+    )
+    if not base_model:
+        logger.warning("Local base config incomplete for role=%s", role)
+        return None
+
+    is_multimodal = role == "radiologist" or "VL" in base_model.upper()
+    cache_key = f"{base_model}|{is_multimodal}"
+    if cache_key in _local_base_cache:
+        return _local_base_cache[cache_key]
+
+    try:
+        agent = LoraRoleAgent(
+            role=role,
+            base_model=base_model,
+            adapter_path=None,
+            is_multimodal=is_multimodal,
+        )
+        _local_base_cache[cache_key] = agent
+        return agent
+    except Exception as exc:
+        logger.error("Failed to load local base for role=%s: %s", role, exc)
         return None
